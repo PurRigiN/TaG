@@ -9,7 +9,7 @@ class CoreferenceResolutionTableFiller(BaseTableFiller):
     def __init__(self, hidden_dim: int, block_dim: int=128, threshold: float=0.4, strategy: str='average'):
         # threshold: the minimum accepted similarity
         super().__init__(hidden_dim, hidden_dim, block_dim, 1, .0, nn.BCEWithLogitsLoss())
-        self.clustering = AgglomerativeClustering(n_clusters=None, linkage=strategy, affinity='precomputed', distance_threshold=1 - threshold)
+        self.clustering = AgglomerativeClustering(n_clusters=None, linkage=strategy, metric='precomputed', distance_threshold=1 - threshold)
 
     def inference(self, head_embed: torch.Tensor=None, tail_embed: torch.Tensor=None,\
                     span_len=None, batch_hts=None, logits: torch.Tensor=None):
