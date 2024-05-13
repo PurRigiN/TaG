@@ -27,6 +27,13 @@ def get_cluster_mapping(pred: list, gold: list):
     Input in sample format. Get the mapping dict from pred to gold.
     Pred has already been converted by span_mapping.
     Cluster format: [...set of span index...]
+    
+    做一个字典, 识别出pred中的cluster与gold中的cluster的对应关系
+    对于pred中的每一个cluster, 如果pred中的cluster与gold中的某一个cluster一致, 
+    则认为是一个正确的匹配, 并把该pred中的cluster的index映射到gold中的cluster的index
+    否则映射到-1
+    
+    返回一个True Positive的数量(有多少是被正确识别的), 和一个映射字典
     """
     cluster_mapping = {}
     tp = 0
@@ -41,6 +48,31 @@ def get_cluster_mapping(pred: list, gold: list):
         if i_p not in cluster_mapping:
             cluster_mapping[i_p] = -1
     return tp, cluster_mapping
+
+def get_reverse_cluster_map(pred: list, gold: list):
+    """
+    Input in sample format. Get the mapping dict from pred to gold.
+    Pred has already been converted by span_mapping.
+    Cluster format: [...set of span index...]
+    
+    做一个字典, 识别出pred中的cluster与gold中的cluster的对应关系
+    对于gold中的每一个cluster, 如果gold中的cluster与pred中的某一个cluster一致, 
+    则认为是一个正确的匹配, 并把该gold中的cluster的index映射到pred中的cluster的index
+    否则映射到-1
+    
+    返回一个映射字典
+    """
+    reverse_cluster_map = {}
+    pred = [set(cluster) for cluster in pred]
+    gold = [set(cluster) for cluster in gold]
+    for i_g, gc in enumerate(gold):
+        for i_p, pc in enumerate(pred):
+            if pc == gc:
+                reverse_cluster_map[i_g] = i_p
+                break
+        if i_g not in reverse_cluster_map:
+            reverse_cluster_map[i_g] = -1
+    return reverse_cluster_map
 
 def get_relation_mapping(pred: list, gold: list):
     """

@@ -16,6 +16,9 @@ def generate_gc_data(dev_file, test_file, dataset='docred'):
     """
     Generate data for GC (graph composition, i.e. coreference resolution + relation extraction).
     Use span prediction from ME.
+
+    for train_annotated.json, use groundtruth label.
+    for dev/test.json, use the result generated from ME.
     """
     root_dir = os.path.dirname(os.path.realpath(__file__))
     root_dir = os.path.dirname(root_dir)
@@ -48,6 +51,10 @@ def generate_gc_data(dev_file, test_file, dataset='docred'):
     return    
 
 def delete_invalid_spans(src, dst):
+    """
+    it seams that there are some invalid spans in groundtruth labels.
+    this fun deals with the problem.
+    """
     data = []
     tp, fp, fn = 0, 0, 0
     with open(src, 'r', encoding='utf-8') as f:

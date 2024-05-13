@@ -40,9 +40,9 @@ class SequenceTagger(nn.Module):
         # current support:
         #   discard: discard invalid "I" tokens
  
-        seq_len = attention_mask.sum(1).cpu().numpy().astype(np.int32).tolist()
+        seq_len = attention_mask.sum(1).cpu().numpy().astype(np.int32).tolist()     # list: [batch,]
         pred_logit = self.forward(input)
-        pred_class = torch.max(pred_logit, dim=-1)[1]
+        pred_class = torch.max(pred_logit, dim=-1)[1]       # [batch, doc_len], each element is indices
         pred_class = pred_class.cpu().numpy().astype(np.int32)
         pred_spans = [[] for i in range(len(seq_len))]
         for i, l_i in enumerate(seq_len):

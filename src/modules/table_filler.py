@@ -15,6 +15,21 @@ def get_node_embed(sequence_output: torch.Tensor=None, batch_span_pos=None, stra
     span_embs = torch.stack(span_embs, dim=0)
     return span_embs
 
+def get_node_embed_s_and_a(sequence_output: torch.Tensor=None, batch_span_pos=None, batch_anaphor_pos=None):
+    """
+    get node embed (including span embed and anaphor embed)
+    """
+    embs = []
+    for i, (span_pos, anaphor_pos) in enumerate(zip(batch_span_pos, batch_anaphor_pos)):
+        for span in span_pos:
+            emb = sequence_output[i, span[0]]
+            embs.append(emb)
+        for anaphor in anaphor_pos:
+            emb = sequence_output[i, anaphor]
+            embs.append(emb)
+    embs = torch.stack(embs, dim=0)
+    return embs
+
 def convert_node_to_table(nodes: torch.Tensor=None, span_len=None):
     offset = 0
     hss, tss = [], []
@@ -96,6 +111,10 @@ def gen_hts(span_len: int):
     return [[i, j] for i in range(span_len) for j in range(span_len)]
 
 class BaseTableFiller(nn.Module):
+    """
+    总之,这个网络就是输入两个节点的表示,然后输出一个logits,个数为num_class
+    在table_filler阶段, coref和re的table都是用这个网络, 个数num_class为1
+    """
     def __init__(self, hidden_dim: int, emb_dim:int, block_dim: int, num_class: int, sample_rate:float, lossf: nn.Module):
         super().__init__()
         # validation: input can be chunked into blocks
@@ -127,7 +146,7 @@ class BaseTableFiller(nn.Module):
         linear_logits = self.linear(torch.cat([hs, ts], dim=-1))
 
         hs = hs.view(-1, self.num_block, self.block_dim)
-        ts = hs.view(-1, self.num_block, self.block_dim)
+        ts = ts.view(-1, self.num_block, self.block_dim)
         bl = (hs.unsqueeze(3) * ts.unsqueeze(2)).view(-1, self.emb_dim * self.block_dim)
         bilinear_logits = self.bilinear(bl)
         logits = bilinear_logits + linear_logits

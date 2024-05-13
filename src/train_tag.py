@@ -83,6 +83,8 @@ def train(args, model: Table2Graph, train_features, dev_features, test_features=
                           "re_table_label": batch["re_table_label"].to(args.device),
                           "spans": batch["spans"],
                           "hts": batch["hts"],
+                          "anaphors": batch["anaphors"],
+                          "span_anaphor_graph": batch["span_anaphor_graph"].to(args.device),
                           "syntax_graph": batch["syntax_graph"].to(args.device),}
                 loss = model.compute_loss(**inputs)
                 loss = loss / args.gradient_accumulation_steps
@@ -143,12 +145,24 @@ def evaluate(args, model: Table2Graph, features, tag=""):
         inputs = {"input_ids": batch["input_ids"].to(args.device),
                   "attention_mask": batch["attention_mask"].to(args.device),
                   "spans": batch["spans"],
-                  "syntax_graph": batch["syntax_graph"].to(args.device),}
+                  "syntax_graph": batch["syntax_graph"].to(args.device),
+                  "anaphors": batch["anaphors"],
+                  "span_anaphor_graph": batch["span_anaphor_graph"].to(args.device),}
         with torch.no_grad():
             outputs = model.inference(**inputs)      
             cr_pred.extend(outputs['cr_predictions'])
             re_pred.extend(outputs['re_predictions'])
 
+    # cr_pred: 是一个列表, 每一个元素对应一份Document中的clusters 簇集合
+    # clusters 簇集合中的每个元素是一个cluster, 表示属于同一个实体的mention集合
+    # 每一个mention, 也就是一个数字，表示的是一个index，指向spans里面的一个mention
+
+    # cr_gold: 也是类似的，已经从事实span表中，转换到预测span表，每一个数字指向spans里面的一个mention
+    # 如果在预测出的span中没有对应的，也就是预测错误或没有预测出，用-1来表示/占位
+    
+    # re_pred: 是一个列表，每一个元素对应一份Document中的triples 三元组集合{"h": i, "r": r, "t": j}
+    # i 和 j是cluster的index，r是关系的index
+    # re_gold: 也是类似的, 但它是没有经过转换的，其中的"h" "t"都是cr_gold.clusters的index
     cr_f1, cr_p, cr_r = compute_cr_f1(pred_clusters=cr_pred, gold_clusters=cr_gold) # hard f1
     avg, muc, b3, ceafe = compute_avg_cr_f1(pred_clusters=cr_pred, gold_clusters=cr_gold) # avg f1
     # get cluster mapping
@@ -164,6 +178,139 @@ def evaluate(args, model: Table2Graph, features, tag=""):
                    tag + "_avg_f1": avg * 100, tag + "_muc_f1": muc * 100, tag + "_b3_f1": b3 * 100, tag + "_ceafe_f1": ceafe * 100}
     return re_f1, output_logs
 
+def analyze_report(args, model: Table2Graph, features, tokenizer, tag=""):
+    model.eval()
+    # load vertexSet
+    vertexSets = [f["vertexSet"] for f in features]
+    dataloader = DataLoader(features, batch_size=args.test_batch_size, 
+                            shuffle=False, collate_fn=collate_fn)
+
+    cr_gold, re_gold = [], []
+    cr_pred, re_pred = [], []
+
+    for step, batch in tqdm(enumerate(dataloader), desc='eval'):
+        cr_gold.extend(batch["cr_clusters"])      # cr_clusters
+        re_gold.extend(batch["re_triples"])
+        
+        inputs = {"input_ids": batch["input_ids"].to(args.device),
+                  "attention_mask": batch["attention_mask"].to(args.device),
+                  "spans": batch["spans"],
+                  "syntax_graph": batch["syntax_graph"].to(args.device),
+                  "anaphors": batch["anaphors"],
+                  "span_anaphor_graph": batch["span_anaphor_graph"].to(args.device),}
+        with torch.no_grad():
+            outputs = model.inference(**inputs)      
+            cr_pred.extend(outputs['cr_predictions'])
+            re_pred.extend(outputs['re_predictions'])
+    
+    report_list = []
+    for feature, clusters_pred, clusters_gold, rels_pred, rels_gold in zip(features, cr_pred, cr_gold, re_pred, re_gold):
+        report_dict = {}
+        # 计算一个样例的coref tp, fp, fn
+        cr_tp, cluster_map = get_cluster_mapping(clusters_pred, clusters_gold)
+        cr_fp = len(clusters_pred) - cr_tp
+        cr_fn = len(clusters_gold) - cr_tp
+        report_dict['cr_tp'] = cr_tp
+        report_dict['cr_fp'] = cr_fp
+        report_dict['cr_fn'] = cr_fn
+        # 计算这个样本中有多少簇是一定无法被预测出来的（span 没有划出来, 存在值为-1的index）
+        cnt_cluster_could_not_be_predicted = 0 
+        for cluster in clusters_gold:
+            if -1 in cluster:
+                cnt_cluster_could_not_be_predicted += 1
+        report_dict['cnt_cluster_could_not_be_predicted'] = cnt_cluster_could_not_be_predicted
+        # 分错的fp减去无法被预测的，就是模型本身在coref中的错误
+        
+        # relation
+        # 计算这个样本中，有多少个relation是一定无法被预测出来的
+        # 1. 因为提及没有被识别出来
+        # 2. 在提及被识别出来的情况下，因为coref没有预测出正确的cluster
+        reverse_cluster_map = get_reverse_cluster_map(clusters_pred, clusters_gold)
+        cnt_rel_could_not_be_predicted_me = 0
+        cnt_rel_could_not_be_predicted_coref = 0
+        for rel in rels_gold:
+            head_cluster = clusters_gold[rel['h']]
+            tail_cluster = clusters_gold[rel['t']]
+            # 如果head或者tail的cluster中有-1，那么这个relation是无法被预测出来的，此时原因为提及没有识别出来
+            if -1 in head_cluster or -1 in tail_cluster:
+                cnt_rel_could_not_be_predicted_me += 1
+            # 又如果head或者tail没有在预测出的cluster找到能与之对应的，此时原因为coref没有预测出正确的cluster
+            elif reverse_cluster_map[rel['h']] == -1 or reverse_cluster_map[rel['t']] == -1:
+                cnt_rel_could_not_be_predicted_coref += 1
+        report_dict['cnt_rel_could_not_be_predicted_me'] = cnt_rel_could_not_be_predicted_me
+        report_dict['cnt_rel_could_not_be_predicted_coref'] = cnt_rel_could_not_be_predicted_coref
+
+        # 计算tp
+        # 将预测出的cluster映射到gold cluster上，然后计算relation的tp, fp, fn
+        new_rels_pred = [{'h': cluster_map[r['h']], 't': cluster_map[r['t']], 'r': r['r']} for r in rels_pred]
+        re_tp = 0
+        for pr in new_rels_pred:
+            if pr in rels_gold:
+                re_tp += 1
+        re_fp = len(rels_pred) - re_tp
+        re_fn = len(rels_gold) - re_tp
+        report_dict['re_tp'] = re_tp
+        report_dict['re_fp'] = re_fp
+        report_dict['re_fn'] = re_fn
+    
+        # 复原句子，可视化结果
+
+        report_dict['raw_spans'] = feature['raw_spans']
+        report_dict['sents'] = feature['sents']
+        report_dict['labels'] = feature['labels']
+        report_dict['clusters_pred'] = clusters_pred
+        report_dict['clusters_gold'] = clusters_gold
+        report_dict['cluster_map'] = cluster_map
+        report_dict['reverse_cluster_map'] = reverse_cluster_map
+        report_dict['new_rels_pred'] = new_rels_pred
+        report_dict['rels_pred'] = rels_pred
+        report_dict['rels_gold'] = rels_gold
+        
+        
+        report_list.append(report_dict)
+    return report_list
+
+def calculate_dict_list(report_list):
+    # 计算tp, fp, fn
+    cr_tp, cr_fp, cr_fn = 0, 0, 0
+    re_tp, re_fp, re_fn = 0, 0, 0
+    total_cluster_could_not_be_predicted = 0
+    total_rel_could_not_be_predicted_me = 0
+    total_rel_could_not_be_predicted_coref = 0
+    for i in report_list:
+        cr_tp += i['cr_tp']
+        cr_fp += i['cr_fp']
+        cr_fn += i['cr_fn']
+        re_tp += i['re_tp']
+        re_fp += i['re_fp']
+        re_fn += i['re_fn']
+        total_cluster_could_not_be_predicted += i['cnt_cluster_could_not_be_predicted']
+        total_rel_could_not_be_predicted_me += i['cnt_rel_could_not_be_predicted_me']
+        total_rel_could_not_be_predicted_coref += i['cnt_rel_could_not_be_predicted_coref']
+    cr_p = cr_tp / (cr_tp + cr_fp + 1e-7)
+    cr_r = cr_tp / (cr_tp + cr_fn + 1e-7)
+    cr_f1 = (2 * cr_p * cr_r) / (cr_r + cr_p + 1e-7)
+    re_p = re_tp / (re_tp + re_fp + 1e-7)
+    re_r = re_tp / (re_tp + re_fn + 1e-7)
+    re_f1 = (2 * re_p * re_r) / (re_r + re_p + 1e-7)
+    return_dict = {}
+    return_dict ['cr_tp'] = cr_tp
+    return_dict ['cr_fp'] = cr_fp
+    return_dict ['cr_fn'] = cr_fn
+    return_dict ['cr_p'] = cr_p
+    return_dict ['cr_r'] = cr_r
+    return_dict ['cr_f1'] = cr_f1
+    return_dict ['re_tp'] = re_tp
+    return_dict ['re_fn'] = re_fn
+    return_dict ['re_p'] = re_p
+    return_dict ['re_p'] = re_p
+    return_dict ['re_r'] = re_r
+    return_dict ['re_f1'] = re_f1
+    return_dict['total_cluster_could_not_be_predicted'] = total_cluster_could_not_be_predicted
+    return_dict['total_rel_could_not_be_predicted_me'] = total_rel_could_not_be_predicted_me
+    return_dict['total_rel_could_not_be_predicted_coref'] = total_rel_could_not_be_predicted_coref
+    return return_dict
+        
 def report(args, model: Table2Graph, features):
     model.eval()
     dataloader = DataLoader(features, batch_size=args.test_batch_size, 
@@ -178,7 +325,9 @@ def report(args, model: Table2Graph, features):
         inputs = {"input_ids": batch["input_ids"].to(args.device),
                   "attention_mask": batch["attention_mask"].to(args.device),
                   "spans": batch["spans"],
-                  "syntax_graph": batch["syntax_graph"].to(args.device),}
+                  "syntax_graph": batch["syntax_graph"].to(args.device),
+                  "anaphors": batch["anaphors"],
+                  "span_anaphor_graph": batch["span_anaphor_graph"].to(args.device),}
         with torch.no_grad():
             outputs = model.inference(**inputs)      
             cr_pred.extend(outputs['cr_predictions'])
@@ -218,11 +367,14 @@ def collate_fn(batch):
     input_ids = torch.tensor(input_ids, dtype=torch.long)
     attention_mask = torch.tensor(attention_mask, dtype=torch.float)
     spans = [f["spans"] for f in batch]
+    anaphors = [f["anaphors"] for f in batch]
     cr_clusters = [f["cr_clusters"] for f in batch]
     re_triples = [f["re_triples"] for f in batch]
 
     syntax_graph = [torch.tensor(f["syntax_graph"], dtype=float) for f in batch]
     syntax_graph = torch.block_diag(*syntax_graph)
+    span_anaphor_graph = [torch.tensor(f["span_anaphor_graph"], dtype=float) for f in batch]
+    span_anaphor_graph = torch.block_diag(*span_anaphor_graph)
 
     if batch[0]["cr_label"] is None:
         cr_label = None
@@ -259,6 +411,8 @@ def collate_fn(batch):
                 "cr_label": cr_label, "cr_clusters": cr_clusters,
                 "re_label": re_label, "re_triples": re_triples,
                 "syntax_graph": syntax_graph,
+                "anaphors": anaphors,
+                "span_anaphor_graph": span_anaphor_graph,
                 "cr_table_label": cr_table_label, "re_table_label": re_table_label,
                 }
     return output
@@ -272,8 +426,8 @@ if __name__ == "__main__":
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     args.device = device
     # get config and tokenizer
-    config = AutoConfig.from_pretrained(args.model_name_or_path)
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+    config = AutoConfig.from_pretrained(args.model_name_or_path, proxies ={'http':'10.242.187.124:7890'})
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, proxies ={'http':'10.242.187.124:7890'})
     config.num_class = len(docred_rel2id)
     config.num_gcn_layers = args.num_gcn_layers
     config.alpha = args.alpha
@@ -303,11 +457,39 @@ if __name__ == "__main__":
 
         train(args, model, train_features, dev_features, test_features)
     else:
-        model = amp.initialize(model, opt_level="O1", verbosity=0)
-        model.load_state_dict(torch.load(args.load_path))
+        
         
         dev_features = read_dataset(tokenizer, split='dev', dataset=args.dataset, task='gc')
         test_features = read_dataset(tokenizer, split='test', dataset=args.dataset, task='gc')
+
+        model = amp.initialize(model, opt_level="O1", verbosity=0)
+        model.load_state_dict(torch.load(args.load_path))
+        
+        # ----------------my_analyze-------------
+
+        report_dict_list = analyze_report(args, model, dev_features, tokenizer, tag="")
+        result_dict = calculate_dict_list(report_dict_list)
+        print(f"total-------cr_p: {result_dict['cr_p']}, cr_r: {result_dict['cr_r']}, cr_f1: {result_dict['cr_f1']}------")
+        print(f"total-------re_p: {result_dict['re_p']}, re_r: {result_dict['re_r']}, re_f1: {result_dict['re_f1']}------")
+        print(f"total-------total_cluster_could_not_be_predicted: {result_dict['total_cluster_could_not_be_predicted']}------")
+        print(f"total-------total_rel_could_not_be_predicted_me: {result_dict['total_rel_could_not_be_predicted_me']}------")
+        print(f"total-------total_rel_could_not_be_predicted_coref: {result_dict['total_rel_could_not_be_predicted_coref']}------")
+        print(result_dict)
+        print("----------------------")
+        # import csv
+        # file_path = "report/report.csv"
+        # fieldnames = set().union(*(d.keys() for d in report_dict_list))
+        # # 使用字典的键作为CSV的列头
+        # with open(file_path, 'w', newline='') as csvfile:
+        #     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        #     writer.writeheader()
+        #     writer.writerows(report_dict_list)
+        
+        # save as json
+        file_path = "report/report.json"
+        with open(file_path, "w") as f:
+            json.dump(report_dict_list, f)
+        # ----------------my_analyze-------------
         
         dev_score, dev_output = evaluate(args, model, dev_features, tag="dev")
         print(dev_output)
