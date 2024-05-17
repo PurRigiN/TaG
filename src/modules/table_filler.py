@@ -96,6 +96,10 @@ def gen_hts(span_len: int):
     return [[i, j] for i in range(span_len) for j in range(span_len)]
 
 class BaseTableFiller(nn.Module):
+    """
+    总之,这个网络就是输入两个节点的表示,然后输出一个logits,个数为num_class
+    在table_filler阶段, coref和re的table都是用这个网络, 个数num_class为1
+    """
     def __init__(self, hidden_dim: int, emb_dim:int, block_dim: int, num_class: int, sample_rate:float, lossf: nn.Module):
         super().__init__()
         # validation: input can be chunked into blocks
@@ -127,7 +131,7 @@ class BaseTableFiller(nn.Module):
         linear_logits = self.linear(torch.cat([hs, ts], dim=-1))
 
         hs = hs.view(-1, self.num_block, self.block_dim)
-        ts = hs.view(-1, self.num_block, self.block_dim)
+        ts = ts.view(-1, self.num_block, self.block_dim)
         bl = (hs.unsqueeze(3) * ts.unsqueeze(2)).view(-1, self.emb_dim * self.block_dim)
         bilinear_logits = self.bilinear(bl)
         logits = bilinear_logits + linear_logits

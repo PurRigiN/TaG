@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
+from opt_einsum import contract
 
-from modules.table_filler import BaseTableFiller, get_hrt, gen_hts, get_node_embed, convert_node_to_table
+from modules.table_filler import BaseTableFiller, get_hrt, gen_hts, convert_node_to_table
 from modules.mention_extraction import SequenceTagger
 from modules.coreference_resolution import CoreferenceResolutionTableFiller
 from modules.relation_extraction import RelationExtractionTableFiller
@@ -117,12 +118,12 @@ class Table2Graph(nn.Module):
         return sequence_output, attention
 
     def forward(self, input_ids=None, attention_mask=None, spans=None, 
-                    syntax_graph=None):
+                    anaphors=None, syntax_graph=None):
         sequence_output, attention = self.encode(input_ids, attention_mask)
         span_len = [len(span) for span in spans]
-        hts = [gen_hts(l) for l in span_len]
-        hs, ts = get_hrt(sequence_output, attention, spans, hts)
-        rs = hs[:, self.hidden_size:]   # get context embedding
+        anaphor_len = [len(anaphor) for anaphor in anaphors]
+        hts = [gen_hts(l+a_l) for l, a_l in zip(span_len, anaphor_len)]
+        hs, ts, rs = self.get_hrt_span_anaphor(sequence_output, attention, spans, anaphors, hts)
 
         cr_table = self.CRTablePredictor.forward(hs, ts)
         re_table = self.RETablePredictor.forward(hs, ts)
@@ -130,22 +131,23 @@ class Table2Graph(nn.Module):
         # convert logits to tabel in batch form
         offset = 0
         cr_adj, re_adj = [], [] # store sub table first
-        for l in span_len:
-            cr_sub = cr_table[offset: offset + l*l].view(l, l)
-            re_sub = re_table[offset: offset + l*l].view(l, l)
+        for l, a_l in zip(span_len, anaphor_len):
+            cr_sub = cr_table[offset: offset + (l+a_l)*(l+a_l)].view((l+a_l), (l+a_l))
+            re_sub = re_table[offset: offset + (l+a_l)*(l+a_l)].view((l+a_l), (l+a_l))
             cr_sub = torch.softmax(cr_sub, dim=-1)
             re_sub = torch.softmax(re_sub, dim=-1)
             cr_adj.append(cr_sub)
             re_adj.append(re_sub)
-            offset += l*l
+            offset += (l+a_l)*(l+a_l)
         cr_adj = torch.block_diag(*cr_adj)
         re_adj = torch.block_diag(*re_adj)
         sg_adj = syntax_graph
 
         adjacency_list = [cr_adj, re_adj, sg_adj]
-        nodes = get_node_embed(sequence_output, spans)
+        nodes = self.get_node_embed_s_and_a(sequence_output, spans, anaphors)
 
         nodes = self.RGCN(nodes, adjacency_list)
+        nodes = self.remove_anaphor_node(nodes, span_len, anaphor_len)
 
         hs, ts = convert_node_to_table(nodes, span_len)
         hs = torch.cat([hs, rs], dim=-1)
@@ -157,12 +159,11 @@ class Table2Graph(nn.Module):
         return cr_logits, re_logits
 
     def compute_loss(self, input_ids=None, attention_mask=None, spans=None, 
-                     hts=None, cr_label=None, re_label=None,
+                     hts_table=None, cr_label=None, re_label=None,
                      cr_table_label=None, re_table_label=None,
-                     syntax_graph=None):
+                     anaphors=None, syntax_graph=None):
         sequence_output, attention = self.encode(input_ids, attention_mask)
-        hs, ts = get_hrt(sequence_output, attention, spans, hts)
-        rs = hs[:, self.hidden_size:]   # get context embedding
+        hs, ts, rs = self.get_hrt_span_anaphor(sequence_output, attention, spans, anaphors, hts_table)
 
         # graph structure prediction & compute auxiliary loss
         cr_table_loss, cr_table = self.CRTablePredictor.compute_loss(hs, ts, cr_table_label, return_logit=True)
@@ -170,24 +171,26 @@ class Table2Graph(nn.Module):
 
         # convert logits to table in batch form
         span_len = [len(span) for span in spans]
+        anaphor_len = [len(anaphor) for anaphor in anaphors]
         offset = 0
         cr_adj, re_adj = [], [] # store sub table first
-        for l in span_len:
-            cr_sub = cr_table[offset: offset + l*l].view(l, l)
-            re_sub = re_table[offset: offset + l*l].view(l, l)
+        for l, a_l in zip(span_len, anaphor_len):
+            cr_sub = cr_table[offset: offset + (l+a_l)*(l+a_l)].view((l+a_l), (l+a_l))
+            re_sub = re_table[offset: offset + (l+a_l)*(l+a_l)].view((l+a_l), (l+a_l))
             cr_sub = torch.softmax(cr_sub, dim=-1)
             re_sub = torch.softmax(re_sub, dim=-1)
             cr_adj.append(cr_sub)
             re_adj.append(re_sub)
-            offset += l*l
+            offset += (l+a_l)*(l+a_l)
         cr_adj = torch.block_diag(*cr_adj)
         re_adj = torch.block_diag(*re_adj)
         sg_adj = syntax_graph
 
         adjacency_list = [cr_adj, re_adj, sg_adj]
-        nodes = get_node_embed(sequence_output, spans)
+        nodes = self.get_node_embed_s_and_a(sequence_output, spans, anaphors)
 
         nodes = self.RGCN(nodes, adjacency_list)
+        nodes = self.remove_anaphor_node(nodes, span_len, anaphor_len)
 
         hs, ts = convert_node_to_table(nodes, span_len)
         hs = torch.cat([hs, rs], dim=-1)
@@ -198,13 +201,14 @@ class Table2Graph(nn.Module):
         return cr_loss + re_loss + self.alpha * cr_table_loss + self.alpha * re_table_loss
 
     def inference(self, input_ids=None, attention_mask=None, spans=None, 
-                    syntax_graph=None):
+                    anaphors=None, syntax_graph=None):
         span_len = [len(span) for span in spans]
         hts = [gen_hts(l) for l in span_len]
 
         inputs = {"input_ids": input_ids,
                   "attention_mask": attention_mask,
                   "spans": spans,
+                  "anaphors": anaphors,
                   "syntax_graph": syntax_graph}
 
         cr_logits, re_logits = self.forward(**inputs) 
@@ -240,3 +244,83 @@ class Table2Graph(nn.Module):
         
         outputs = {'cr_predictions': cr_predictions, 're_predictions': re_predictions}
         return outputs
+
+    def remove_anaphor_node(self, nodes, span_len, anaphor_len):
+        offset = 0
+        new_nodes = []
+        for l, a_l in zip(span_len, anaphor_len):
+            new_nodes.append(nodes[offset: offset + l])
+            offset += l + a_l
+        new_nodes = torch.cat(new_nodes, dim=0)
+        return new_nodes
+
+    def get_hrt_span_anaphor(sequence_output: torch.Tensor=None, attention: torch.Tensor=None,\
+        batch_span_pos=None, batch_anaphors_pos=None, batch_hts=None, strategy='marker'):
+        """
+        span_pos, anaphors_pos and hts are in batch format.
+        attention shape: (batch_size, num_heads, sequence_length, sequence_length).
+        """
+        hss, tss, rss, rss_span = [], [], [], []
+        for i, (span_pos, anaphors_pos, hts) in enumerate(zip(batch_span_pos, batch_anaphors_pos, batch_hts)):
+            span_hts = gen_hts(len(span_pos))
+            both_embs, both_atts= [], []
+            for span in span_pos:
+                if strategy == 'marker':
+                    emb = sequence_output[i, span[0]]
+                    att = attention[i, :, span[0]]
+                else:
+                    raise ValueError("Unimplemented strategy.")
+                both_embs.append(emb)
+                both_atts.append(att)
+            for anaphors in anaphors_pos:
+                emb = sequence_output[i, anaphors]
+                att = attention[i, :, anaphors]
+                both_embs.append(emb)
+                both_atts.append(att)
+
+            both_embs = torch.stack(both_embs, dim=0)   # [n_s + n_a, d]
+            both_atts = torch.stack(both_atts, dim=0)   # [n_s + n_a, num_heads, seq_len]
+
+            hts = torch.LongTensor(hts).to(sequence_output.device)
+            hs = torch.index_select(both_embs, 0, hts[:, 0])        # [(n_s+n_a)^2, d]
+            ts = torch.index_select(both_embs, 0, hts[:, 1])        # [(n_s+n_a)^2, d]
+
+            h_att = torch.index_select(both_atts, 0, hts[:, 0])    # [(n_s+n_a)^2, num_heads, seq_len]
+            t_att = torch.index_select(both_atts, 0, hts[:, 1])    # [(n_s+n_a)^2, num_heads, seq_len]
+            ht_att = (h_att * t_att).mean(1)
+            ht_att = ht_att / (ht_att.sum(1, keepdim=True) + 1e-5)
+            rs = contract("ld,rl->rd", sequence_output[i], ht_att)
+
+            span_hts = torch.LongTensor(span_hts).to(sequence_output.device)
+            h_att_span = torch.index_select(both_atts, 0, span_hts[:, 0])    # [(n_s+n_a)^2, num_heads, seq_len]
+            t_att_span = torch.index_select(both_atts, 0, span_hts[:, 1])    # [(n_s+n_a)^2, num_heads, seq_len]
+            ht_att_span = (h_att_span * t_att_span).mean(1)
+            ht_att_span = ht_att_span / (ht_att_span.sum(1, keepdim=True) + 1e-5)
+            rs_span = contract("ld,rl->rd", sequence_output[i], ht_att_span)
+
+            hss.append(hs)
+            tss.append(ts)
+            rss.append(rs)
+            rss_span.append(rs_span)
+        hss = torch.cat(hss, dim=0)
+        tss = torch.cat(tss, dim=0)
+        rss = torch.cat(rss, dim=0)
+        rss_span = torch.cat(rss_span, dim=0)
+        hss = torch.cat([hss, rss], dim=-1)
+        tss = torch.cat([tss, rss], dim=-1)
+        return hss, tss, rss_span
+    
+    def get_node_embed_s_and_a(sequence_output: torch.Tensor=None, batch_span_pos=None, batch_anaphor_pos=None):
+        """
+        get node embed (including span embed and anaphor embed)
+        """
+        embs = []
+        for i, (span_pos, anaphor_pos) in enumerate(zip(batch_span_pos, batch_anaphor_pos)):
+            for span in span_pos:
+                emb = sequence_output[i, span[0]]
+                embs.append(emb)
+            for anaphor in anaphor_pos:
+                emb = sequence_output[i, anaphor]
+                embs.append(emb)
+        embs = torch.stack(embs, dim=0)
+        return embs
