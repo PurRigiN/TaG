@@ -95,6 +95,8 @@ class Table2Graph(nn.Module):
 
         self.hidden_size = config.hidden_size
 
+        self.span_attention = nn.MultiheadAttention(self.hidden_size, num_heads=1, batch_first=True)
+
         self.CRTablePredictor = BaseTableFiller(hidden_dim=self.hidden_size, emb_dim=self.hidden_size,
                                                 block_dim=64, num_class=1, sample_rate=0, lossf=nn.BCEWithLogitsLoss())
         self.RETablePredictor = BaseTableFiller(hidden_dim=self.hidden_size, emb_dim=self.hidden_size,
@@ -254,7 +256,7 @@ class Table2Graph(nn.Module):
         new_nodes = torch.cat(new_nodes, dim=0)
         return new_nodes
 
-    def get_hrt_span_anaphor(sequence_output: torch.Tensor=None, attention: torch.Tensor=None,\
+    def get_hrt_span_anaphor(self, sequence_output: torch.Tensor=None, attention: torch.Tensor=None,\
         batch_span_pos=None, batch_anaphors_pos=None, batch_hts=None, strategy='marker'):
         """
         span_pos, anaphors_pos and hts are in batch format.
@@ -263,22 +265,33 @@ class Table2Graph(nn.Module):
         hss, tss, rss, rss_span = [], [], [], []
         for i, (span_pos, anaphors_pos, hts) in enumerate(zip(batch_span_pos, batch_anaphors_pos, batch_hts)):
             span_hts = gen_hts(len(span_pos))
-            both_embs, both_atts= [], []
+            both_atts= []
+            span_embs = []
+            anaphor_embs = []
             for span in span_pos:
                 if strategy == 'marker':
                     emb = sequence_output[i, span[0]]
                     att = attention[i, :, span[0]]
                 else:
                     raise ValueError("Unimplemented strategy.")
-                both_embs.append(emb)
+                span_embs.append(emb)
                 both_atts.append(att)
             for anaphors in anaphors_pos:
                 emb = sequence_output[i, anaphors]
                 att = attention[i, :, anaphors]
-                both_embs.append(emb)
+                anaphor_embs.append(emb)
                 both_atts.append(att)
-
-            both_embs = torch.stack(both_embs, dim=0)   # [n_s + n_a, d]
+            span_embs = torch.stack(span_embs, dim=0)
+            if len(anaphor_embs) != 0:
+                anaphor_embs = torch.stack(anaphor_embs, dim=0)
+                key_value = span_embs.unsqueeze(0)
+                query = anaphor_embs.unsqueeze(0)
+                (out_attention, _) = self.span_attention(query=query, key=key_value, value=key_value)
+                out_attention = out_attention.squeeze(0)
+                anaphor_embs = (anaphor_embs + out_attention) / 2
+                both_embs = torch.cat([span_embs, anaphor_embs], dim=0)   # [n_s + n_a, d]
+            else:
+                both_embs = span_embs
             both_atts = torch.stack(both_atts, dim=0)   # [n_s + n_a, num_heads, seq_len]
 
             hts = torch.LongTensor(hts).to(sequence_output.device)
@@ -310,17 +323,31 @@ class Table2Graph(nn.Module):
         tss = torch.cat([tss, rss], dim=-1)
         return hss, tss, rss_span
     
-    def get_node_embed_s_and_a(sequence_output: torch.Tensor=None, batch_span_pos=None, batch_anaphor_pos=None):
+    def get_node_embed_s_and_a(self, sequence_output: torch.Tensor=None, batch_span_pos=None, batch_anaphor_pos=None):
         """
         get node embed (including span embed and anaphor embed)
         """
         embs = []
         for i, (span_pos, anaphor_pos) in enumerate(zip(batch_span_pos, batch_anaphor_pos)):
+            span_embs = []
+            anaphor_embs = []
             for span in span_pos:
                 emb = sequence_output[i, span[0]]
-                embs.append(emb)
+                span_embs.append(emb)
             for anaphor in anaphor_pos:
                 emb = sequence_output[i, anaphor]
-                embs.append(emb)
-        embs = torch.stack(embs, dim=0)
+                anaphor_embs.append(emb)
+            span_embs = torch.stack(span_embs, dim=0)
+            if len(anaphor_pos) != 0:
+                anaphor_embs = torch.stack(anaphor_embs, dim=0)
+                key_value = span_embs.unsqueeze(0)
+                query = anaphor_embs.unsqueeze(0)
+                (out_attention, _) = self.span_attention(query=query, key=key_value, value=key_value)
+                out_attention = out_attention.squeeze(0)
+                anaphor_embs = (anaphor_embs + out_attention) / 2
+                both_embs = torch.cat([span_embs, anaphor_embs], dim=0)
+            else:
+                both_embs = span_embs
+            embs.append(both_embs)
+        embs = torch.cat(embs, dim=0)
         return embs
