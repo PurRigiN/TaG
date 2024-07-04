@@ -260,6 +260,7 @@ def analyze_report(args, model: Table2Graph, features):
         report_dict['new_rels_pred'] = new_rels_pred
         report_dict['rels_pred'] = rels_pred
         report_dict['rels_gold'] = rels_gold
+        report_dict['num_anaphors'] = len(feature['anaphors'])
         
         report_list.append(report_dict)
     return report_list

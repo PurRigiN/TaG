@@ -48,7 +48,7 @@ class RelationExtractionTableFiller(BaseTableFiller):
         offset = 0
         predictions = []
         if logits is None:
-            logits = self.forward(head_embed, tail_embed).to(dtype=torch.float64)
+            logits, _ = self.forward(head_embed, tail_embed).to(dtype=torch.float64)
         for l, hts, clusters in zip(span_len, batch_hts, batch_clusters):
             preds = logits[offset:offset+len(hts)]
             # preds = torch.sigmoid(preds)       # convert logits to probabilities

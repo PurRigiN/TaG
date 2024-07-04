@@ -128,20 +128,21 @@ class BaseTableFiller(nn.Module):
         hs = torch.tanh(self.head_extractor(head_embed))
         ts = torch.tanh(self.tail_extractor(tail_embed))
 
-        linear_logits = self.linear(torch.cat([hs, ts], dim=-1))
+        h_l = torch.cat([hs, ts], dim=-1)
+        linear_logits = self.linear(h_l)
 
         hs = hs.view(-1, self.num_block, self.block_dim)
         ts = ts.view(-1, self.num_block, self.block_dim)
         bl = (hs.unsqueeze(3) * ts.unsqueeze(2)).view(-1, self.emb_dim * self.block_dim)
         bilinear_logits = self.bilinear(bl)
         logits = bilinear_logits + linear_logits
-        return logits
+        return logits, (h_l, bl)
 
     def compute_loss(self, head_embed: torch.Tensor, tail_embed: torch.Tensor, labels: torch.Tensor, return_logit: bool=False):
         """
         all tensor with size [\sum{n^2}]
         """
-        logits = self.forward(head_embed, tail_embed)
+        logits, (h_l, h_bl) = self.forward(head_embed, tail_embed)
 
         sample_logits = logits
         sample_labels = labels
@@ -164,5 +165,5 @@ class BaseTableFiller(nn.Module):
         loss = self.lossf(sample_logits, sample_labels)
         
         if return_logit:
-            return loss, logits
-        return loss
+            return loss, (h_l, h_bl), logits
+        return loss, (h_l, h_bl)

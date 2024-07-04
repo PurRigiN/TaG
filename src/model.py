@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from opt_einsum import contract
 
 from modules.table_filler import BaseTableFiller, get_hrt, gen_hts, convert_node_to_table
@@ -105,6 +106,9 @@ class Table2Graph(nn.Module):
 
         self.CR = CoreferenceResolutionTableFiller(self.hidden_size)
         self.RE = RelationExtractionTableFiller(self.hidden_size, config.num_class, beta=config.beta)
+
+        self.coref_contrastive_loss = CorefContrastiveLoss()
+
         self.alpha = config.alpha
         self.beta = config.beta
         self.rho = config.rho
@@ -127,8 +131,8 @@ class Table2Graph(nn.Module):
         hts = [gen_hts(l+a_l) for l, a_l in zip(span_len, anaphor_len)]
         hs, ts, rs = self.get_hrt_span_anaphor(sequence_output, attention, spans, anaphors, hts)
 
-        cr_table = self.CRTablePredictor.forward(hs, ts)
-        re_table = self.RETablePredictor.forward(hs, ts)
+        cr_table, _ = self.CRTablePredictor.forward(hs, ts)
+        re_table, _ = self.RETablePredictor.forward(hs, ts)
 
         # convert logits to tabel in batch form
         offset = 0
@@ -155,8 +159,8 @@ class Table2Graph(nn.Module):
         hs = torch.cat([hs, rs], dim=-1)
         ts = torch.cat([ts, rs], dim=-1)
 
-        cr_logits = self.CR.forward(hs, ts)
-        re_logits = self.RE.forward(hs, ts)
+        cr_logits, _ = self.CR.forward(hs, ts)
+        re_logits, _ = self.RE.forward(hs, ts)
 
         return cr_logits, re_logits
 
@@ -168,8 +172,10 @@ class Table2Graph(nn.Module):
         hs, ts, rs = self.get_hrt_span_anaphor(sequence_output, attention, spans, anaphors, hts_table)
 
         # graph structure prediction & compute auxiliary loss
-        cr_table_loss, cr_table = self.CRTablePredictor.compute_loss(hs, ts, cr_table_label, return_logit=True)
-        re_table_loss, re_table = self.RETablePredictor.compute_loss(hs, ts, re_table_label, return_logit=True)
+        cr_table_loss, (cr_table_h_l, cr_table_h_bl), cr_table = self.CRTablePredictor.compute_loss(hs, ts, cr_table_label, return_logit=True)
+        re_table_loss, (re_table_h_l, re_table_h_bl), re_table = self.RETablePredictor.compute_loss(hs, ts, re_table_label, return_logit=True)
+        constrative_hidden = torch.cat([cr_table_h_l, cr_table_h_bl], dim=-1)
+        cr_table_contrastive_loss = self.compute_coref_contrastive_loss(constrative_hidden, cr_table_label, spans, anaphors)
 
         # convert logits to table in batch form
         span_len = [len(span) for span in spans]
@@ -198,8 +204,11 @@ class Table2Graph(nn.Module):
         hs = torch.cat([hs, rs], dim=-1)
         ts = torch.cat([ts, rs], dim=-1)
 
-        cr_loss = self.CR.compute_loss(hs, ts, cr_label)
-        re_loss = self.RE.compute_loss(hs, ts, re_label)
+        cr_loss, (cr_h_l, cr_h_bl) = self.CR.compute_loss(hs, ts, cr_label)
+        re_loss, (re_h_l, re_h_bl) = self.RE.compute_loss(hs, ts, re_label)
+        constrative_hidden = torch.cat([cr_h_l, cr_h_bl], dim=-1)
+        cr_contrastive_loss = self.compute_coref_contrastive_loss(constrative_hidden, cr_label, spans)
+ 
         return cr_loss + re_loss + self.alpha * cr_table_loss + self.alpha * re_table_loss
 
     def inference(self, input_ids=None, attention_mask=None, spans=None, 
@@ -351,3 +360,118 @@ class Table2Graph(nn.Module):
             embs.append(both_embs)
         embs = torch.cat(embs, dim=0)
         return embs
+
+    def compute_coref_contrastive_loss(self, batch_embs, cr_labels, spans, anaphors=None, temperature=0.2):
+        """
+        batch_embs: (num_mentions, hidden_dim)
+        cr_labels:  (sum(num_mentions^2), )
+        """
+        label_list = []
+        emb_list = []
+        if anaphors == None:
+            span_len = [len(span) for span in spans]
+            offset = 0
+            offset_emb = 0
+            for l in span_len:
+                label_per_sample = cr_labels[offset: offset + l*l]
+                label_per_sample = label_per_sample.view(l, l)
+                label_list.append(label_per_sample)
+                emb = batch_embs[offset_emb : offset_emb + l]
+                emb_list.append(emb)
+                offset += l*l
+                offset_emb += l
+        else:
+            span_len = [len(span) for span in spans]
+            anaphor_len = [len(anaphor) for anaphor in anaphors]
+            offset = 0
+            offset_emb = 0
+            for l, a_l in zip(span_len, anaphor_len):
+                label_per_sample = cr_labels[offset: offset + (l+a_l)*(l+a_l)]
+                label_per_sample = label_per_sample.view(l+a_l, l+a_l)
+                label_list.append(label_per_sample)
+                emb = batch_embs[offset_emb : offset_emb + l+a_l]
+                emb_list.append(emb)
+                offset += (l+a_l)*(l+a_l)
+                offset_emb += l+a_l
+        total_loss = 0
+        for label, emb in zip(label_list, emb_list):
+            loss = self.coref_contrastive_loss(emb, label, temperature)
+            total_loss += loss
+        total_loss = total_loss / len(label_list)
+        return total_loss
+
+def compute_coref_contrastive_loss_2(self, corf_logits, cr_labels, spans, anaphors=None, temperature=0.2):
+        """
+        corf_logits: (sum(num_mentions^2), dim)
+        cr_labels:  (sum(num_mentions^2), )
+        """
+        label_list = []
+        logits_list = []
+        if anaphors == None:
+            span_len = [len(span) for span in spans]
+            offset = 0
+            for l in span_len:
+                label_per_sample = cr_labels[offset: offset + l*l]
+                label_per_sample = label_per_sample.view(l, l)
+                label_list.append(label_per_sample)
+                logit = corf_logits[offset: offset + l*l]
+                logit = logit.view(l, l)
+                logits_list.append(logit)
+                offset += l*l
+        else:
+            span_len = [len(span) for span in spans]
+            anaphor_len = [len(anaphor) for anaphor in anaphors]
+            offset = 0
+            for l, a_l in zip(span_len, anaphor_len):
+                label_per_sample = cr_labels[offset: offset + (l+a_l)*(l+a_l)]
+                label_per_sample = label_per_sample.view(l+a_l, l+a_l)
+                label_list.append(label_per_sample)
+                logit = corf_logits[offset: offset + (l+a_l)*(l+a_l)]
+                logit = logit.view(l, l)
+                logits_list.append(logit)
+                offset += (l+a_l)*(l+a_l)
+        total_loss = 0
+        for label, logit in zip(label_list, logits_list):
+            """
+            label: (num_mentions, num_mentions)
+            logit: (sum(num_mentions^2), dim)
+            """
+            n = label.size(0)
+            device = label.device
+            label_matrix = torch.zeros(n**2, n**2, device=device)
+            for a_index, line in enumerate(label):
+                connect_list = [[a_index, a_index]]
+                for b_index, value in enumerate(line):
+                    if value == 1:
+                        connect_list.append([a_index, b_index])
+                for i in connect_list:
+                    for j in connect_list:
+                        label_matrix[i[0]*n+i[1], j[0]*n+j[1]] = 1
+            loss = self.coref_contrastive_loss(logit, label_matrix, temperature)
+            total_loss += loss
+        total_loss = total_loss / len(label_list)
+        return total_loss
+
+class CorefContrastiveLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.log_softmax = nn.LogSoftmax(dim=-1)
+
+    def forward(self, mention_embs, cr_labels, temperature=0.2):
+        """
+        mention_embs: (num_mentions, hidden_dim)
+        cr_labels:  (num_mentions, num_mentions)
+        """
+        n = mention_embs.size(0)
+        device = mention_embs.device
+        mask = torch.eye(n, device=device).bool()
+        # 对每一对mention计算余弦相似度
+        cosine_sim_matrix = F.cosine_similarity(mention_embs.unsqueeze(1), mention_embs.unsqueeze(0), dim=2)
+        cosine_sim_matrix = cosine_sim_matrix[~mask].reshape(n, n-1)
+        cosine_sim_matrix = cosine_sim_matrix / temperature
+        cosine_sim_matrix = self.log_softmax(cosine_sim_matrix)
+
+        cr_labels = cr_labels[~mask].reshape(n, n-1)
+        loss = - cr_labels * cosine_sim_matrix
+        loss = loss.sum(dim=-1).mean()
+        return loss

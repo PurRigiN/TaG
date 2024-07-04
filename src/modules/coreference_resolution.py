@@ -25,7 +25,7 @@ class CoreferenceResolutionTableFiller(BaseTableFiller):
         offset = 0
         predictions = []
         if logits is None:
-            logits = self.forward(head_embed, tail_embed).to(dtype=torch.float64)
+            logits, _ = self.forward(head_embed, tail_embed).to(dtype=torch.float64)
             logits = torch.sigmoid(logits)      # convert logits to probabilities
         for l, hts in zip(span_len, batch_hts):
             assert l*l == len(hts), "span_len^2 must equal to len(hts)."
