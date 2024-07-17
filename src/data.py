@@ -246,9 +246,7 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred'):
         # self loop
         for i in range(num_spans + num_anaphors):
             syntax_graph[i][i] = 1
-        syntax_graph[syntax_graph == 0] = -1e30
-        syntax_graph = torch.softmax(syntax_graph, dim=-1)
-        syntax_graph = syntax_graph.cpu().tolist()
+        
         # get clusters and relations
         # if mention not in predictions, add -1 as index
         clusters, relations = [], []
@@ -350,7 +348,51 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred'):
                     # else: 
                         # 没有关系的两个实体，不需要添加关系
                         # 在初始化的时候，就是[1]+[0]*(len(docred_rel2id)-1)，不需要操作
-                        
+
+            anaphors_scores = [1.0   for i in range(num_anaphors)]
+            anaphors_if_cal = [False for i in range(num_anaphors)]
+            for (link_m, link_a) in link_span_anaphor:
+                # 如果计算过了就下一个link
+                if anaphors_if_cal[link_a]:
+                    continue
+                else:
+                    anaphors_if_cal[link_a] = True
+                cur_anaphor = raw_anaphors[link_a]
+                # 依据对应的mention，找到所属的entity
+                link_e = find_entity_by_mention(link_m, entity_len)
+                # 对于所有mention
+                contain_entity_mention = False
+                contain_other_mention = False
+                for m in range(num_spans):
+                    if m in range(accumulate_entity_len[link_e], accumulate_entity_len[link_e+1]):
+                        if cur_anaphor[0] == raw_spans[m][0][0]:
+                            contain_entity_mention = True
+                    else:
+                        if cur_anaphor[0] == raw_spans[m][0][0]:
+                            contain_other_mention = True
+                if not contain_entity_mention and contain_other_mention:
+                    # 同句内不存在该实体本身的提及，又存在其他实体的提及，重要性最高
+                    score = 1.0
+                elif contain_entity_mention and contain_other_mention:
+                    # 同句内既存在该实体本身的提及，又存在其他实体的提及，重要性次之
+                    score = 0.6
+                else:
+                    score = 0.2
+                anaphors_scores[link_a] = score
+
+            process_vector = [1.0 for i in range(num_spans)] + anaphors_scores
+            process_vector = torch.tensor(process_vector)
+
+            # syntax_graph
+            syntax_graph = syntax_graph * process_vector.unsqueeze(0) * process_vector.unsqueeze(1)
+            
+            # table_cr_table_label
+            table_cr_table_label = torch.tensor(table_cr_table_label) * process_vector.unsqueeze(0) * process_vector.unsqueeze(1)
+            table_cr_table_label = table_cr_table_label.cpu().tolist()
+            # table_re_table_label
+            table_re_table_label = torch.tensor(table_re_table_label) * process_vector.unsqueeze(0) * process_vector.unsqueeze(1)
+            table_re_table_label = table_re_table_label.cpu().tolist()
+
             hts_table, cr_table_label, re_table_label = [], [], []
             hts, cr_label, re_label = [], [], []
             for i in range(num_spans+num_anaphors):
@@ -363,7 +405,10 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred'):
                     hts.append([i, j])
                     cr_label.append(table_cr_label[i][j])
                     re_label.append(table_re_label[i][j])
-        
+        syntax_graph[syntax_graph == 0] = -1e30
+        syntax_graph = torch.softmax(syntax_graph, dim=-1)
+        syntax_graph = syntax_graph.cpu().tolist()
+
         feature = {"input_ids": input_ids, "spans": spans, "hts": hts,
                    "cr_label": cr_label, "cr_clusters": clusters,
                    "re_label": re_label, "re_triples": relations, "re_table_label": re_table_label,
