@@ -117,8 +117,8 @@ def train(args, model: Table2Graph, train_features, dev_features, test_features=
         return num_steps
     
     optimizer_grouped_parameters = [
-        {"params": [p for n, p in model.named_parameters() if "bert" in n], },
-        {"params": [p for n, p in model.named_parameters() if not "bert" in n], "lr": 1e-4},
+        {"params": [p for n, p in model.named_parameters() if "bert" in n], "lr": 3e-5},
+        {"params": [p for n, p in model.named_parameters() if not "bert" in n], },
     ]
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon)
     model, optimizer = amp.initialize(model, optimizer, opt_level="O1", verbosity=0)
