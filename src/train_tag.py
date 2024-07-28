@@ -316,7 +316,7 @@ if __name__ == "__main__":
 
         root_dir = os.path.dirname(os.path.realpath(__file__))
         root_dir = os.path.dirname(root_dir)
-        result_dir = os.path.join(root_dir, f"result/{args.dataset}/gc")
+        result_dir = os.path.join(root_dir, f"result/{args.dataset}/gc/{args.notes}")
         if not os.path.isdir(result_dir):
             os.makedirs(result_dir)
         with open(os.path.join(result_dir, "result.json"), "w") as f:
