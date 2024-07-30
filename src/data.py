@@ -17,11 +17,11 @@ root_dir = os.path.dirname(root_dir)
 docred_rel2id = json.load(open(os.path.join(root_dir, "data/docred/rel2id.json"), "r"))
 docred_id2rel = {v: k for k, v in docred_rel2id.items()}
 
-def read_dataset(tokenizer, split='train_annotated', dataset='docred', task='me'):
+def read_dataset(tokenizer, split='train_annotated', dataset='docred', task='me', curriculum_threshold=0.0):
     if task == 'me':
         return read_me_data(tokenizer=tokenizer, split=split, dataset=dataset)
     if task == 'gc':
-        return read_gc_data(tokenizer=tokenizer, split=split, dataset=dataset)
+        return read_gc_data(tokenizer=tokenizer, split=split, dataset=dataset, curriculum_threshold=curriculum_threshold)
     raise ValueError("Unknown task type.")
 
 def read_me_data(tokenizer, split='train_annotated', dataset='docred'):
@@ -117,7 +117,7 @@ def read_me_data(tokenizer, split='train_annotated', dataset='docred'):
     print("# of mentions:\t\t{}".format(cnt_mention))
     return features
 
-def read_gc_data(tokenizer, split='train_annotated', dataset='docred'):
+def read_gc_data(tokenizer, split='train_annotated', dataset='docred', curriculum_threshold=0.0):
     i_line = 0
     features = []
     data_path = f'data/{dataset}/{split}_gc.json'
@@ -125,7 +125,9 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred'):
     # init spacy
     nlp = spacy.load('en_core_web_trf')
     nlp.add_pipe('coreferee')
-
+    no_score_counter = 0
+    consider_counter = 0
+    total_link = 0
     offset = 1  # for BERT/RoBERTa/Longformer, all follows [CLS] sent [SEP] format
     for sample in tqdm(data, desc='Data'):
         # ----process spacy----
@@ -195,14 +197,22 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred'):
                                     idx = chain[chain_index_j][0]
                                     chain_index_j += 1
                                 tk_obj = doc[idx]
-                                if tk_obj.pos_ == 'NOUN' or  tk_obj.pos_ == 'PRON':
+                                if tk_obj.pos_ == 'PRON':
+                                    total_link += 1
                                     link_score = 0.5
                                     # 找分数
                                     antecedent_index_in_doc = token_obj.i
-                                    for potential_refered in tk_obj._.coref_chains.temp_potential_refereds:
-                                        if potential_refered.root_index == antecedent_index_in_doc:
-                                            link_score = potential_refered.temp_score
-                                            break
+                                    if hasattr(tk_obj._.coref_chains, "temp_potential_referreds"):
+                                        for potential_refered in tk_obj._.coref_chains.temp_potential_referreds:
+                                            if potential_refered.root_index == antecedent_index_in_doc:
+                                                link_score = potential_refered.temp_score
+                                                break
+                                    else:
+                                        no_score_counter += 1
+                                    if link_score < curriculum_threshold:
+                                        # 如果该分数小于阈值，就不考虑该边
+                                        continue
+                                    consider_counter += 1
                                     singal_ana = find_sent_id_location(idx, sents_len_list)
                                     # 查找是否已经加入到raw_anaphors中
                                     index_anaphors = -1
@@ -212,9 +222,9 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred'):
                                             break
                                     if index_anaphors == -1:
                                         raw_anaphors.append(singal_ana)
-                                        link_span_anaphor.append((i, len(raw_anaphors) - 1, link_score))
+                                        link_span_anaphor.append((i, len(raw_anaphors) - 1))
                                     else:
-                                        link_span_anaphor.append((i, index_anaphors, link_score))
+                                        link_span_anaphor.append((i, index_anaphors))
 
         # get spans
         # spans 的格式：
@@ -306,22 +316,21 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred'):
                         # 包括一阶段和二阶段
                         table_cr_table_label[m1][m2] = 1
                         table_cr_label[m1][m2] = 1
-            for (link_m, link_a, link_score) in link_span_anaphor:
+            for (link_m, link_a) in link_span_anaphor:
                 # 对于每一个anaphor，找到对应的mention，然后找到所属的entity
                 link_e = find_entity_by_mention(link_m, entity_len)
                 # 将该anaphor与entity内的所有mention之间的关系添加label
                 for m1 in range(accumulate_entity_len[link_e], accumulate_entity_len[link_e+1]):
-                    table_cr_table_label[m1][link_a+num_spans] = link_score
-                    table_cr_table_label[link_a+num_spans][m1] = link_score
+                    table_cr_table_label[m1][link_a+num_spans] = 1
+                    table_cr_table_label[link_a+num_spans][m1] = 1
             for i in range(num_spans, num_spans + num_anaphors):
                 for j in range(num_spans, num_spans + num_anaphors):
                     # 对于每一对anaphor
                     for m in range(num_spans):
                         # 如果存在一个mention，与两个anaphor都有关系，那么两个anaphor之间也有关系
                         if table_cr_table_label[i][m] > 0 and table_cr_table_label[j][m] > 0:
-                            temp_score = table_cr_table_label[i][m] * table_cr_table_label[j][m]
-                            table_cr_table_label[i][j] = temp_score
-                            table_cr_table_label[j][i] = temp_score
+                            table_cr_table_label[i][j] = 1
+                            table_cr_table_label[j][i] = 1
                             break
             # re
             for h_e in range(len(entities)):
@@ -337,32 +346,29 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred'):
                                 table_re_table_label[t_m][h_m] = 1
                         for a in range(num_spans, num_spans+num_anaphors):
                             if table_cr_table_label[accumulate_entity_len[h_e]][a] > 0:
-                                temp_score = table_cr_table_label[accumulate_entity_len[h_e]][a]
                                 # 所有与h_e有指代关系的anaphor，将它们与t_e的mention相连接，表示存在关系，双向
                                 for t_m in range(accumulate_entity_len[t_e], accumulate_entity_len[t_e + 1]):
-                                    table_re_table_label[a][t_m] = temp_score
-                                    table_re_table_label[t_m][a] = temp_score
+                                    table_re_table_label[a][t_m] = 1
+                                    table_re_table_label[t_m][a] = 1
                         for a in range(num_spans, num_spans+num_anaphors):
                             if table_cr_table_label[accumulate_entity_len[t_e]][a] > 0:
-                                temp_score = table_cr_table_label[accumulate_entity_len[t_e]][a]
                                 # 所有与t_e有指代关系的anaphor，将它们与h_e的mention相连接，表示存在关系，双向
                                 for h_m in range(accumulate_entity_len[h_e], accumulate_entity_len[h_e + 1]):
-                                    table_re_table_label[a][h_m] = temp_score
-                                    table_re_table_label[h_m][a] = temp_score
+                                    table_re_table_label[a][h_m] = 1
+                                    table_re_table_label[h_m][a] = 1
                         for a in range(num_spans, num_spans+num_anaphors):
                             if table_cr_table_label[accumulate_entity_len[h_e]][a] > 0:
                                 for b in range(num_spans, num_spans+num_anaphors):
                                     if table_cr_table_label[accumulate_entity_len[t_e]][b] > 0:
-                                        temp_score = table_cr_table_label[accumulate_entity_len[h_e]][a] * table_cr_table_label[accumulate_entity_len[t_e]][b]
-                                        table_re_table_label[a][b] = temp_score
-                                        table_re_table_label[b][a] = temp_score
+                                        table_re_table_label[a][b] = 1
+                                        table_re_table_label[b][a] = 1
                     # else: 
                         # 没有关系的两个实体，不需要添加关系
                         # 在初始化的时候，就是[1]+[0]*(len(docred_rel2id)-1)，不需要操作
 
             # anaphors_scores = [1.0   for i in range(num_anaphors)]
             # anaphors_if_cal = [False for i in range(num_anaphors)]
-            # for (link_m, link_a, link_score) in link_span_anaphor:
+            # for (link_m, link_a) in link_span_anaphor:
             #     # 如果计算过了就下一个link
             #     if anaphors_if_cal[link_a]:
             #         continue
@@ -435,6 +441,10 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred'):
         features.append(feature)
 
     print("# of documents:\t\t{}.".format(i_line))
+    print("no_score_counter: ", no_score_counter)
+    print("total_link: ", total_link)
+    print("curriculum_threshold: ", curriculum_threshold)
+    print("num_link_consider: ", consider_counter)
     return features
 
 def find_sent_id_location(index, sents_len_list):

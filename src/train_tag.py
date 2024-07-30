@@ -60,8 +60,9 @@ def get_opt():
     return parser.parse_args()
 
 def train(args, model: Table2Graph, train_features, dev_features, test_features=None):
-    def finetune(features, optimizer, num_epoch, num_steps):
+    def finetune(train_features, optimizer, num_epoch, num_steps):
         best_score = -1
+        features = train_features[0]
         dataloader = DataLoader(features, batch_size=args.train_batch_size, 
                                 shuffle=True, collate_fn=collate_fn)
         train_iterator = range(num_epoch)
@@ -71,7 +72,21 @@ def train(args, model: Table2Graph, train_features, dev_features, test_features=
                                                     num_training_steps=total_steps)
         print("Total steps: {}".format(total_steps))
         print("Warmup steps: {}".format(warmup_steps))
+        curriculum_epoch = int(num_epoch / 4)
         for epoch in train_iterator:
+            if epoch == (curriculum_epoch * 1):
+                features = train_features[1]
+                dataloader = DataLoader(features, batch_size=args.train_batch_size, 
+                                        shuffle=True, collate_fn=collate_fn)
+            elif epoch == (curriculum_epoch * 2):
+                features = train_features[2]
+                dataloader = DataLoader(features, batch_size=args.train_batch_size, 
+                                        shuffle=True, collate_fn=collate_fn)
+            elif epoch == (curriculum_epoch * 3):
+                features = train_features[3]
+                dataloader = DataLoader(features, batch_size=args.train_batch_size, 
+                                        shuffle=True, collate_fn=collate_fn)
+
             model.zero_grad()
             cum_loss = torch.tensor(0.0).to(args.device)
             for step, batch in tqdm(enumerate(dataloader), desc='train epoch {}'.format(epoch)):
@@ -449,7 +464,19 @@ if __name__ == "__main__":
     model.to(device)
 
     if args.load_path == "":
-        train_features = read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc')
+        train_features = []
+        train_features.append(
+            read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=0.75)
+        )
+        train_features.append(
+            read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=0.5)
+        )
+        train_features.append(
+            read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=0.25)
+        )
+        train_features.append(
+            read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=0.0)
+        )
         dev_features = read_dataset(tokenizer, split='dev', dataset=args.dataset, task='gc')
         test_features = None
 
@@ -462,40 +489,40 @@ if __name__ == "__main__":
         model.load_state_dict(torch.load(args.load_path))
         
         # ----------------my_analyze-------------
-        report_dict_list = analyze_report(args, model, dev_features)
-        result_dict = calculate_dict_list(report_dict_list)
-        print(f"total-------cr_p: {result_dict['cr_p']}, cr_r: {result_dict['cr_r']}, cr_f1: {result_dict['cr_f1']}------")
-        print(f"total-------re_p: {result_dict['re_p']}, re_r: {result_dict['re_r']}, re_f1: {result_dict['re_f1']}------")
-        print(f"total-------total_cluster_could_not_be_predicted: {result_dict['total_cluster_could_not_be_predicted']}------")
-        print(f"total-------total_rel_could_not_be_predicted_me: {result_dict['total_rel_could_not_be_predicted_me']}------")
-        print(f"total-------total_rel_could_not_be_predicted_coref: {result_dict['total_rel_could_not_be_predicted_coref']}------")
-        print(result_dict)
-        print("----------------------")
+        # report_dict_list = analyze_report(args, model, dev_features)
+        # result_dict = calculate_dict_list(report_dict_list)
+        # print(f"total-------cr_p: {result_dict['cr_p']}, cr_r: {result_dict['cr_r']}, cr_f1: {result_dict['cr_f1']}------")
+        # print(f"total-------re_p: {result_dict['re_p']}, re_r: {result_dict['re_r']}, re_f1: {result_dict['re_f1']}------")
+        # print(f"total-------total_cluster_could_not_be_predicted: {result_dict['total_cluster_could_not_be_predicted']}------")
+        # print(f"total-------total_rel_could_not_be_predicted_me: {result_dict['total_rel_could_not_be_predicted_me']}------")
+        # print(f"total-------total_rel_could_not_be_predicted_coref: {result_dict['total_rel_could_not_be_predicted_coref']}------")
+        # print(result_dict)
+        # print("----------------------")
         
-        root_dir = os.path.dirname(os.path.realpath(__file__))
-        root_dir = os.path.dirname(root_dir)
-        if args.report_save_folder != "":
-            if not os.path.isdir(args.report_save_folder):
-                os.makedirs(args.report_save_folder)
-            root_dir = args.report_save_folder
-        report_dir = os.path.join(root_dir, f"{args.dataset}")
-        if not os.path.isdir(report_dir):
-            os.makedirs(report_dir)
+        # root_dir = os.path.dirname(os.path.realpath(__file__))
+        # root_dir = os.path.dirname(root_dir)
+        # if args.report_save_folder != "":
+        #     if not os.path.isdir(args.report_save_folder):
+        #         os.makedirs(args.report_save_folder)
+        #     root_dir = args.report_save_folder
+        # report_dir = os.path.join(root_dir, f"{args.dataset}")
+        # if not os.path.isdir(report_dir):
+        #     os.makedirs(report_dir)
 
-        # save as csv
-        import csv
-        file_path = os.path.join(report_dir, "report.csv")
-        fieldnames = set().union(*(d.keys() for d in report_dict_list))
-        # 使用字典的键作为CSV的列头
-        with open(file_path, 'w', newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(report_dict_list)
+        # # save as csv
+        # import csv
+        # file_path = os.path.join(report_dir, "report.csv")
+        # fieldnames = set().union(*(d.keys() for d in report_dict_list))
+        # # 使用字典的键作为CSV的列头
+        # with open(file_path, 'w', newline='') as csvfile:
+        #     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        #     writer.writeheader()
+        #     writer.writerows(report_dict_list)
 
-        # save as json
-        file_path = os.path.join(report_dir, "report.json")
-        with open(file_path, "w") as f:
-            json.dump(report_dict_list, f)
+        # # save as json
+        # file_path = os.path.join(report_dir, "report.json")
+        # with open(file_path, "w") as f:
+        #     json.dump(report_dict_list, f)
         # ----------------my_analyze-------------
         
         dev_score, dev_output = evaluate(args, model, dev_features, tag="dev")
