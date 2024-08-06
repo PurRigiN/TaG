@@ -50,6 +50,12 @@ def get_opt():
                         help="Epoch that begin to evaluate.")
     parser.add_argument("--report_save_folder", default="", type=str,
                         help="Path the analyze report to be saved.")
+    parser.add_argument("--curriculum_pre25", type=float,
+                        help="Curriculum learning threshold of pre25")
+    parser.add_argument("--curriculum_pre50", type=float,
+                        help="Curriculum learning threshold of pre50")
+    parser.add_argument("--curriculum_pre75", type=float,
+                        help="Curriculum learning threshold of pre75")
 
     parser.add_argument("--device", default="cuda:0", type=str,
                         help="The running device.")
@@ -74,19 +80,19 @@ def train(args, model: Table2Graph, train_features, dev_features, test_features=
         print("Warmup steps: {}".format(warmup_steps))
         curriculum_epoch = int(num_epoch / 4)
         for epoch in train_iterator:
-            if epoch == (curriculum_epoch * 1):
-                features = train_features[1]
-                dataloader = DataLoader(features, batch_size=args.train_batch_size, 
-                                        shuffle=True, collate_fn=collate_fn)
-            elif epoch == (curriculum_epoch * 2):
-                features = train_features[2]
-                dataloader = DataLoader(features, batch_size=args.train_batch_size, 
-                                        shuffle=True, collate_fn=collate_fn)
-            elif epoch == (curriculum_epoch * 3):
-                features = train_features[3]
-                dataloader = DataLoader(features, batch_size=args.train_batch_size, 
-                                        shuffle=True, collate_fn=collate_fn)
-
+            if args.curriculum_pre25 != None and args.curriculum_pre50 != None and args.curriculum_pre75 != None:
+                if epoch == (curriculum_epoch * 1):
+                    features = train_features[1]
+                    dataloader = DataLoader(features, batch_size=args.train_batch_size, 
+                                            shuffle=True, collate_fn=collate_fn)
+                elif epoch == (curriculum_epoch * 2):
+                    features = train_features[2]
+                    dataloader = DataLoader(features, batch_size=args.train_batch_size, 
+                                            shuffle=True, collate_fn=collate_fn)
+                elif epoch == (curriculum_epoch * 3):
+                    features = train_features[3]
+                    dataloader = DataLoader(features, batch_size=args.train_batch_size, 
+                                            shuffle=True, collate_fn=collate_fn)
             model.zero_grad()
             cum_loss = torch.tensor(0.0).to(args.device)
             for step, batch in tqdm(enumerate(dataloader), desc='train epoch {}'.format(epoch)):
@@ -465,18 +471,23 @@ if __name__ == "__main__":
 
     if args.load_path == "":
         train_features = []
-        train_features.append(
-            read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=0.75)
-        )
-        train_features.append(
-            read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=0.5)
-        )
-        train_features.append(
-            read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=0.25)
-        )
-        train_features.append(
-            read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=0.0)
-        )
+        if args.curriculum_pre25 != None and args.curriculum_pre50 != None and args.curriculum_pre75 != None:
+            train_features.append(
+                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.curriculum_pre75)
+            )
+            train_features.append(
+                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.curriculum_pre50)
+            )
+            train_features.append(
+                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.curriculum_pre25)
+            )
+            train_features.append(
+                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=0.0)
+            )
+        else:
+            train_features.append(
+                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=0.0)
+            )
         dev_features = read_dataset(tokenizer, split='dev', dataset=args.dataset, task='gc')
         test_features = None
 

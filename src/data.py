@@ -128,6 +128,7 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred', curriculu
     no_score_counter = 0
     consider_counter = 0
     total_link = 0
+    scores_list = []
     offset = 1  # for BERT/RoBERTa/Longformer, all follows [CLS] sent [SEP] format
     for sample in tqdm(data, desc='Data'):
         # ----process spacy----
@@ -203,15 +204,22 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred', curriculu
                                     # 找分数
                                     antecedent_index_in_doc = token_obj.i
                                     if hasattr(tk_obj._.coref_chains, "temp_potential_referreds"):
+                                        found_flag = False
                                         for potential_refered in tk_obj._.coref_chains.temp_potential_referreds:
                                             if potential_refered.root_index == antecedent_index_in_doc:
                                                 link_score = potential_refered.temp_score
+                                                found_flag = True
                                                 break
+                                        if not found_flag:
+                                            no_score_counter += 1
+                                            continue
                                     else:
                                         no_score_counter += 1
+                                        continue
                                     if link_score < curriculum_threshold:
                                         # 如果该分数小于阈值，就不考虑该边
                                         continue
+                                    scores_list.append(link_score)
                                     consider_counter += 1
                                     singal_ana = find_sent_id_location(idx, sents_len_list)
                                     # 查找是否已经加入到raw_anaphors中
@@ -445,6 +453,16 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred', curriculu
     print("total_link: ", total_link)
     print("curriculum_threshold: ", curriculum_threshold)
     print("num_link_consider: ", consider_counter)
+    # scores_list.sort()
+    # print("scores_list: ")
+    # pre25 = int(len(scores_list) / 4 * 1)
+    # pre50 = int(len(scores_list) / 4 * 2)
+    # pre75 = int(len(scores_list) / 4 * 3)
+    # print("pre25: ", scores_list[pre25])
+    # print("pre50: ", scores_list[pre50])
+    # print("pre75: ", scores_list[pre75])
+    # with open('/data/qishunheng/CodeWorkplace/Tag-self/scores_list.json', 'w', encoding='utf-8') as file:
+    #     json.dump(scores_list, file)
     return features
 
 def find_sent_id_location(index, sents_len_list):
