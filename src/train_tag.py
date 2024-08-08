@@ -56,6 +56,8 @@ def get_opt():
                         help="Curriculum learning threshold of pre50")
     parser.add_argument("--curriculum_pre75", type=float,
                         help="Curriculum learning threshold of pre75")
+    parser.add_argument("--trust_threshold", default=0.0, type=float,
+                        help="consider anaphor links that higher than trust_threshold")
 
     parser.add_argument("--device", default="cuda:0", type=str,
                         help="The running device.")
@@ -482,11 +484,11 @@ if __name__ == "__main__":
                 read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.curriculum_pre25)
             )
             train_features.append(
-                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=0.0)
+                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.trust_threshold)
             )
         else:
             train_features.append(
-                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=0.0)
+                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.trust_threshold)
             )
         dev_features = read_dataset(tokenizer, split='dev', dataset=args.dataset, task='gc')
         test_features = None
