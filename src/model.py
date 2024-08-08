@@ -124,11 +124,12 @@ class Table2Graph(nn.Module):
         sequence_output, attention = self.encode(input_ids, attention_mask)
         span_len = [len(span) for span in spans]
         anaphor_len = [len(anaphor) for anaphor in anaphors]
+        batch_len = [(l + a_l) for l, a_l in zip(span_len, anaphor_len)]
         hts = [gen_hts(l+a_l) for l, a_l in zip(span_len, anaphor_len)]
         hs, ts, rs = self.get_hrt_span_anaphor(sequence_output, attention, spans, anaphors, hts)
 
-        cr_table = self.CRTablePredictor.forward(hs, ts)
-        re_table = self.RETablePredictor.forward(hs, ts)
+        cr_table = self.CRTablePredictor.forward(hs, ts, batch_len)
+        re_table = self.RETablePredictor.forward(hs, ts, batch_len)
 
         # convert logits to tabel in batch form
         offset = 0
@@ -155,8 +156,8 @@ class Table2Graph(nn.Module):
         hs = torch.cat([hs, rs], dim=-1)
         ts = torch.cat([ts, rs], dim=-1)
 
-        cr_logits = self.CR.forward(hs, ts)
-        re_logits = self.RE.forward(hs, ts)
+        cr_logits = self.CR.forward(hs, ts, span_len)
+        re_logits = self.RE.forward(hs, ts, span_len)
 
         return cr_logits, re_logits
 
@@ -167,13 +168,15 @@ class Table2Graph(nn.Module):
         sequence_output, attention = self.encode(input_ids, attention_mask)
         hs, ts, rs = self.get_hrt_span_anaphor(sequence_output, attention, spans, anaphors, hts_table)
 
-        # graph structure prediction & compute auxiliary loss
-        cr_table_loss, cr_table = self.CRTablePredictor.compute_loss(hs, ts, cr_table_label, return_logit=True)
-        re_table_loss, re_table = self.RETablePredictor.compute_loss(hs, ts, re_table_label, return_logit=True)
-
         # convert logits to table in batch form
         span_len = [len(span) for span in spans]
         anaphor_len = [len(anaphor) for anaphor in anaphors]
+        batch_len = [(l + a_l) for l, a_l in zip(span_len, anaphor_len)]
+
+        # graph structure prediction & compute auxiliary loss
+        cr_table_loss, cr_table = self.CRTablePredictor.compute_loss(hs, ts, cr_table_label, return_logit=True, batch_len=batch_len)
+        re_table_loss, re_table = self.RETablePredictor.compute_loss(hs, ts, re_table_label, return_logit=True, batch_len=batch_len)
+
         offset = 0
         cr_adj, re_adj = [], [] # store sub table first
         for l, a_l in zip(span_len, anaphor_len):
@@ -198,8 +201,8 @@ class Table2Graph(nn.Module):
         hs = torch.cat([hs, rs], dim=-1)
         ts = torch.cat([ts, rs], dim=-1)
 
-        cr_loss = self.CR.compute_loss(hs, ts, cr_label)
-        re_loss = self.RE.compute_loss(hs, ts, re_label)
+        cr_loss = self.CR.compute_loss(hs, ts, cr_label, batch_len=span_len)
+        re_loss = self.RE.compute_loss(hs, ts, re_label, batch_len=span_len)
         return cr_loss + re_loss + self.alpha * cr_table_loss + self.alpha * re_table_loss
 
     def inference(self, input_ids=None, attention_mask=None, spans=None, 
