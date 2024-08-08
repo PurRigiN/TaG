@@ -96,6 +96,7 @@ class Table2Graph(nn.Module):
         self.hidden_size = config.hidden_size
 
         self.span_attention = nn.MultiheadAttention(self.hidden_size, num_heads=1, batch_first=True)
+        self.two_hop_attention = nn.MultiheadAttention(2*self.hidden_size, num_heads=1, batch_first=True)
 
         self.CRTablePredictor = BaseTableFiller(hidden_dim=self.hidden_size, emb_dim=self.hidden_size,
                                                 block_dim=64, num_class=1, sample_rate=0, lossf=nn.BCEWithLogitsLoss())
@@ -124,12 +125,11 @@ class Table2Graph(nn.Module):
         sequence_output, attention = self.encode(input_ids, attention_mask)
         span_len = [len(span) for span in spans]
         anaphor_len = [len(anaphor) for anaphor in anaphors]
-        batch_len = [(l + a_l) for l, a_l in zip(span_len, anaphor_len)]
         hts = [gen_hts(l+a_l) for l, a_l in zip(span_len, anaphor_len)]
         hs, ts, rs = self.get_hrt_span_anaphor(sequence_output, attention, spans, anaphors, hts)
 
-        cr_table = self.CRTablePredictor.forward(hs, ts, batch_len)
-        re_table = self.RETablePredictor.forward(hs, ts, batch_len)
+        cr_table = self.CRTablePredictor.forward(hs, ts)
+        re_table = self.RETablePredictor.forward(hs, ts)
 
         # convert logits to tabel in batch form
         offset = 0
@@ -156,8 +156,17 @@ class Table2Graph(nn.Module):
         hs = torch.cat([hs, rs], dim=-1)
         ts = torch.cat([ts, rs], dim=-1)
 
-        cr_logits = self.CR.forward(hs, ts, span_len)
-        re_logits = self.RE.forward(hs, ts, span_len)
+        mask_tensor = self.culculate_mask(span_len)
+        mask_tensor = mask_tensor.to(hs.device)
+        hs = hs.unsqueeze(dim=0)
+        ts = ts.unsqueeze(dim=0)
+        (hs, _) = self.two_hop_attention(query=hs, key=hs, value=hs, attn_mask=mask_tensor)
+        (ts, _) = self.two_hop_attention(query=ts, key=ts, value=ts, attn_mask=mask_tensor)
+        hs = hs.squeeze(dim=0)
+        ts = ts.squeeze(dim=0)
+
+        cr_logits = self.CR.forward(hs, ts)
+        re_logits = self.RE.forward(hs, ts)
 
         return cr_logits, re_logits
 
@@ -171,11 +180,10 @@ class Table2Graph(nn.Module):
         # convert logits to table in batch form
         span_len = [len(span) for span in spans]
         anaphor_len = [len(anaphor) for anaphor in anaphors]
-        batch_len = [(l + a_l) for l, a_l in zip(span_len, anaphor_len)]
 
         # graph structure prediction & compute auxiliary loss
-        cr_table_loss, cr_table = self.CRTablePredictor.compute_loss(hs, ts, cr_table_label, return_logit=True, batch_len=batch_len)
-        re_table_loss, re_table = self.RETablePredictor.compute_loss(hs, ts, re_table_label, return_logit=True, batch_len=batch_len)
+        cr_table_loss, cr_table = self.CRTablePredictor.compute_loss(hs, ts, cr_table_label, return_logit=True)
+        re_table_loss, re_table = self.RETablePredictor.compute_loss(hs, ts, re_table_label, return_logit=True)
 
         offset = 0
         cr_adj, re_adj = [], [] # store sub table first
@@ -201,8 +209,17 @@ class Table2Graph(nn.Module):
         hs = torch.cat([hs, rs], dim=-1)
         ts = torch.cat([ts, rs], dim=-1)
 
-        cr_loss = self.CR.compute_loss(hs, ts, cr_label, batch_len=span_len)
-        re_loss = self.RE.compute_loss(hs, ts, re_label, batch_len=span_len)
+        mask_tensor = self.culculate_mask(span_len)
+        mask_tensor = mask_tensor.to(hs.device)
+        hs = hs.unsqueeze(dim=0)
+        ts = ts.unsqueeze(dim=0)
+        (hs, _) = self.two_hop_attention(query=hs, key=hs, value=hs, attn_mask=mask_tensor)
+        (ts, _) = self.two_hop_attention(query=ts, key=ts, value=ts, attn_mask=mask_tensor)
+        hs = hs.squeeze(dim=0)
+        ts = ts.squeeze(dim=0)
+
+        cr_loss = self.CR.compute_loss(hs, ts, cr_label)
+        re_loss = self.RE.compute_loss(hs, ts, re_label)
         return cr_loss + re_loss + self.alpha * cr_table_loss + self.alpha * re_table_loss
 
     def inference(self, input_ids=None, attention_mask=None, spans=None, 
@@ -354,3 +371,31 @@ class Table2Graph(nn.Module):
             embs.append(both_embs)
         embs = torch.cat(embs, dim=0)
         return embs
+
+    def culculate_mask(self, batch_len: list):
+        mask_list = []
+        for singal_len in batch_len:
+            mask_list.append(self.culculate_mask_singal_len(singal_len))
+        mask_tensor = torch.block_diag(*mask_list)
+        return mask_tensor
+
+    def culculate_mask_singal_len(self, singal_len: int):
+        store_list = []
+        for i in range(singal_len):
+            for j in range(singal_len):
+                mask_tensor = torch.zeros(singal_len**2, dtype=torch.bool)
+                index_list = []
+                for aj in range(singal_len):
+                    if aj == j:
+                        continue
+                    index_list.append(i * singal_len + aj)
+                for ai in range(singal_len):
+                    if ai == i:
+                        continue
+                    index_list.append(ai * singal_len + j)
+                index_list.append(i * singal_len + j)
+                for index in index_list:
+                    mask_tensor[index] = True
+                store_list.append(mask_tensor)
+        mask_tensor_singal_len = torch.stack(store_list)
+        return mask_tensor_singal_len

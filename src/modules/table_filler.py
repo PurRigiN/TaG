@@ -110,7 +110,6 @@ class BaseTableFiller(nn.Module):
         self.block_dim = block_dim
         self.num_block = hidden_dim // block_dim
         self.num_class = num_class
-        self.two_hop_attention = nn.MultiheadAttention(2 * hidden_dim, num_heads=1, batch_first=True)
         self.head_extractor = nn.Linear(2 * hidden_dim, emb_dim)                    # add a linear transform + nonlinear activation layer
         self.tail_extractor = nn.Linear(2 * hidden_dim, emb_dim)                    # before bilinear layer
         self.linear = nn.Linear(2 * emb_dim, num_class, bias=False)
@@ -121,19 +120,11 @@ class BaseTableFiller(nn.Module):
             self.sampler = nn.Dropout(p=sample_rate)
         self.lossf = lossf
 
-    def forward(self, head_embed: torch.Tensor=None, tail_embed: torch.Tensor=None, batch_len: list=None):
+    def forward(self, head_embed: torch.Tensor=None, tail_embed: torch.Tensor=None):
         """
         input: nodes' representations, size: [n, d].
         embeds should be concat from batch before !!
         """
-        mask_tensor = self.culculate_mask(batch_len)
-        mask_tensor = mask_tensor.to(head_embed.device)
-        head_embed = head_embed.unsqueeze(dim=0)
-        tail_embed = tail_embed.unsqueeze(dim=0)
-        (head_embed, _) = self.two_hop_attention(query=head_embed, key=head_embed, value=head_embed, attn_mask=mask_tensor)
-        (tail_embed, _) = self.two_hop_attention(query=tail_embed, key=tail_embed, value=tail_embed, attn_mask=mask_tensor)
-        head_embed = head_embed.squeeze(dim=0)
-        tail_embed = tail_embed.squeeze(dim=0)
         hs = torch.tanh(self.head_extractor(head_embed))
         ts = torch.tanh(self.tail_extractor(tail_embed))
 
@@ -146,11 +137,11 @@ class BaseTableFiller(nn.Module):
         logits = bilinear_logits + linear_logits
         return logits
 
-    def compute_loss(self, head_embed: torch.Tensor, tail_embed: torch.Tensor, labels: torch.Tensor, return_logit: bool=False, batch_len=None):
+    def compute_loss(self, head_embed: torch.Tensor, tail_embed: torch.Tensor, labels: torch.Tensor, return_logit: bool=False):
         """
         all tensor with size [\sum{n^2}]
         """
-        logits = self.forward(head_embed, tail_embed, batch_len)
+        logits = self.forward(head_embed, tail_embed)
 
         sample_logits = logits
         sample_labels = labels
@@ -175,32 +166,3 @@ class BaseTableFiller(nn.Module):
         if return_logit:
             return loss, logits
         return loss
-
-    def culculate_mask(self, batch_len: list):
-        mask_list = []
-        for singal_len in batch_len:
-            mask_list.append(self.culculate_mask_singal_len(singal_len))
-        mask_tensor = torch.block_diag(*mask_list)
-        return mask_tensor
-
-    def culculate_mask_singal_len(self, singal_len: int):
-        store_list = []
-        for i in range(singal_len):
-            for j in range(singal_len):
-                mask_tensor = torch.zeros(singal_len**2, dtype=torch.bool)
-                index_list = []
-                for aj in range(singal_len):
-                    if aj == j:
-                        continue
-                    index_list.append(i * singal_len + aj)
-                for ai in range(singal_len):
-                    if ai == i:
-                        continue
-                    index_list.append(ai * singal_len + j)
-                index_list.append(i * singal_len + j)
-                for index in index_list:
-                    mask_tensor[index] = True
-                store_list.append(mask_tensor)
-        mask_tensor_singal_len = torch.stack(store_list)
-        return mask_tensor_singal_len
-        
