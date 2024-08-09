@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from axial_attention import AxialAttention
 from opt_einsum import contract
 
 from modules.table_filler import BaseTableFiller, get_hrt, gen_hts, convert_node_to_table
@@ -105,6 +106,7 @@ class Table2Graph(nn.Module):
 
         self.CR = CoreferenceResolutionTableFiller(self.hidden_size)
         self.RE = RelationExtractionTableFiller(self.hidden_size, config.num_class, beta=config.beta)
+        self.axial_transformer = AxialTransformer_by_mention(4*self.hidden_size, dropout=0.0, num_layers=6, heads=8)
         self.alpha = config.alpha
         self.beta = config.beta
         self.rho = config.rho
@@ -124,8 +126,10 @@ class Table2Graph(nn.Module):
         sequence_output, attention = self.encode(input_ids, attention_mask)
         span_len = [len(span) for span in spans]
         anaphor_len = [len(anaphor) for anaphor in anaphors]
+        batch_len = [(l+a_l) for l, a_l in zip(span_len, anaphor_len)]
         hts = [gen_hts(l+a_l) for l, a_l in zip(span_len, anaphor_len)]
         hs, ts, rs = self.get_hrt_span_anaphor(sequence_output, attention, spans, anaphors, hts)
+        rs_total = hs[:, self.hidden_size:]
 
         cr_table = self.CRTablePredictor.forward(hs, ts)
         re_table = self.RETablePredictor.forward(hs, ts)
@@ -149,12 +153,25 @@ class Table2Graph(nn.Module):
         nodes = self.get_node_embed_s_and_a(sequence_output, spans, anaphors)
 
         nodes = self.RGCN(nodes, adjacency_list)
-        nodes = self.remove_anaphor_node(nodes, span_len, anaphor_len)
+        # nodes = self.remove_anaphor_node(nodes, span_len, anaphor_len)
 
-        hs, ts = convert_node_to_table(nodes, span_len)
-        hs = torch.cat([hs, rs], dim=-1)
-        ts = torch.cat([ts, rs], dim=-1)
-
+        hs, ts = convert_node_to_table(nodes, batch_len)
+        hs = torch.cat([hs, rs_total], dim=-1)
+        ts = torch.cat([ts, rs_total], dim=-1)
+        total_cls_emb = torch.cat([hs, ts], dim=-1)
+        # axial attention
+        offset = 0
+        after_att = []
+        for l, a_l in zip(span_len, anaphor_len):
+            sample_table = total_cls_emb[offset: offset + (l+a_l)*(l+a_l)].view(1, (l+a_l), (l+a_l), self.hidden_size*4)
+            sample_table = self.axial_transformer(sample_table).squeeze(0)
+            sample_table = sample_table[:l, :l, :]
+            sample_table = sample_table.reshape(l*l, self.hidden_size*4)
+            after_att.append(sample_table)
+            offset += (l+a_l)*(l+a_l)
+        after_att = torch.cat(after_att, dim=0)
+        hs = after_att[:, :self.hidden_size*2]
+        ts = after_att[:, self.hidden_size*2:]
         cr_logits = self.CR.forward(hs, ts)
         re_logits = self.RE.forward(hs, ts)
 
@@ -166,6 +183,7 @@ class Table2Graph(nn.Module):
                      anaphors=None, syntax_graph=None):
         sequence_output, attention = self.encode(input_ids, attention_mask)
         hs, ts, rs = self.get_hrt_span_anaphor(sequence_output, attention, spans, anaphors, hts_table)
+        rs_total = hs[:, self.hidden_size:]
 
         # graph structure prediction & compute auxiliary loss
         cr_table_loss, cr_table = self.CRTablePredictor.compute_loss(hs, ts, cr_table_label, return_logit=True)
@@ -174,6 +192,7 @@ class Table2Graph(nn.Module):
         # convert logits to table in batch form
         span_len = [len(span) for span in spans]
         anaphor_len = [len(anaphor) for anaphor in anaphors]
+        batch_len = [(l+a_l) for l, a_l in zip(span_len, anaphor_len)]
         offset = 0
         cr_adj, re_adj = [], [] # store sub table first
         for l, a_l in zip(span_len, anaphor_len):
@@ -192,11 +211,25 @@ class Table2Graph(nn.Module):
         nodes = self.get_node_embed_s_and_a(sequence_output, spans, anaphors)
 
         nodes = self.RGCN(nodes, adjacency_list)
-        nodes = self.remove_anaphor_node(nodes, span_len, anaphor_len)
-
-        hs, ts = convert_node_to_table(nodes, span_len)
-        hs = torch.cat([hs, rs], dim=-1)
-        ts = torch.cat([ts, rs], dim=-1)
+        # nodes = self.remove_anaphor_node(nodes, span_len, anaphor_len)
+        hs, ts = convert_node_to_table(nodes, batch_len)
+        hs = torch.cat([hs, rs_total], dim=-1)
+        ts = torch.cat([ts, rs_total], dim=-1)
+        total_cls_emb = torch.cat([hs, ts], dim=-1)
+        
+        # axial attention
+        offset = 0
+        after_att = []
+        for l, a_l in zip(span_len, anaphor_len):
+            sample_table = total_cls_emb[offset: offset + (l+a_l)*(l+a_l)].view(1, (l+a_l), (l+a_l), self.hidden_size*4)
+            sample_table = self.axial_transformer(sample_table).squeeze(0)
+            sample_table = sample_table[:l, :l, :]
+            sample_table = sample_table.reshape(l*l, self.hidden_size*4)
+            after_att.append(sample_table)
+            offset += (l+a_l)*(l+a_l)
+        after_att = torch.cat(after_att, dim=0)
+        hs = after_att[:, :self.hidden_size*2]
+        ts = after_att[:, self.hidden_size*2:]
 
         cr_loss = self.CR.compute_loss(hs, ts, cr_label)
         re_loss = self.RE.compute_loss(hs, ts, re_label)
@@ -351,3 +384,25 @@ class Table2Graph(nn.Module):
             embs.append(both_embs)
         embs = torch.cat(embs, dim=0)
         return embs
+
+class AxialTransformer_by_mention(nn.Module):
+    def  __init__(self, emb_size = 768, dropout = 0.1, num_layers = 2, dim_index = -1, heads = 8, num_dimensions=2, ):
+        super().__init__()
+        self.num_layers = num_layers
+        self.dim_index = dim_index
+        self.heads = heads
+        self.emb_size = emb_size
+        self.dropout = dropout
+        self.num_dimensions = num_dimensions
+        self.axial_attns = nn.ModuleList([AxialAttention(dim = self.emb_size, dim_index = dim_index, heads = heads, num_dimensions = num_dimensions, ) for i in range(num_layers)])
+        self.ffns = nn.ModuleList([nn.Linear(self.emb_size, self.emb_size) for i in range(num_layers)] )
+        self.lns = nn.ModuleList([nn.LayerNorm(self.emb_size) for i in range(num_layers)])
+        self.attn_dropouts = nn.ModuleList([nn.Dropout(dropout) for i in range(num_layers)])
+        self.ffn_dropouts = nn.ModuleList([nn.Dropout(dropout) for i in range(num_layers)] )
+    def forward(self, x):
+        for idx in range(self.num_layers):
+          x = x + self.attn_dropouts[idx](self.axial_attns[idx](x))
+          x = self.ffns[idx](x)
+          x = self.ffn_dropouts[idx](x)
+          x = self.lns[idx](x)
+        return x
