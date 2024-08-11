@@ -106,7 +106,6 @@ class Table2Graph(nn.Module):
 
         self.CR = CoreferenceResolutionTableFiller(self.hidden_size)
         self.RE = RelationExtractionTableFiller(self.hidden_size, config.num_class, beta=config.beta)
-        self.axial_transformer = AxialTransformer_by_mention(4*self.hidden_size, dropout=0.0, num_layers=6, heads=8)
         self.alpha = config.alpha
         self.beta = config.beta
         self.rho = config.rho
@@ -131,8 +130,8 @@ class Table2Graph(nn.Module):
         hs, ts, rs = self.get_hrt_span_anaphor(sequence_output, attention, spans, anaphors, hts)
         rs_total = hs[:, self.hidden_size:]
 
-        cr_table = self.CRTablePredictor.forward(hs, ts)
-        re_table = self.RETablePredictor.forward(hs, ts)
+        cr_table = self.CRTablePredictor.forward(hs, ts, batch_len)
+        re_table = self.RETablePredictor.forward(hs, ts, batch_len)
 
         # convert logits to tabel in batch form
         offset = 0
@@ -158,22 +157,9 @@ class Table2Graph(nn.Module):
         hs, ts = convert_node_to_table(nodes, batch_len)
         hs = torch.cat([hs, rs_total], dim=-1)
         ts = torch.cat([ts, rs_total], dim=-1)
-        total_cls_emb = torch.cat([hs, ts], dim=-1)
-        # axial attention
-        offset = 0
-        after_att = []
-        for l, a_l in zip(span_len, anaphor_len):
-            sample_table = total_cls_emb[offset: offset + (l+a_l)*(l+a_l)].view(1, (l+a_l), (l+a_l), self.hidden_size*4)
-            sample_table = self.axial_transformer(sample_table).squeeze(0)
-            sample_table = sample_table[:l, :l, :]
-            sample_table = sample_table.reshape(l*l, self.hidden_size*4)
-            after_att.append(sample_table)
-            offset += (l+a_l)*(l+a_l)
-        after_att = torch.cat(after_att, dim=0)
-        hs = after_att[:, :self.hidden_size*2]
-        ts = after_att[:, self.hidden_size*2:]
-        cr_logits = self.CR.forward(hs, ts)
-        re_logits = self.RE.forward(hs, ts)
+
+        cr_logits = self.CR.forward(hs, ts, span_len=span_len, ana_len=anaphor_len)
+        re_logits = self.RE.forward(hs, ts, span_len=span_len, ana_len=anaphor_len)
 
         return cr_logits, re_logits
 
@@ -185,14 +171,14 @@ class Table2Graph(nn.Module):
         hs, ts, rs = self.get_hrt_span_anaphor(sequence_output, attention, spans, anaphors, hts_table)
         rs_total = hs[:, self.hidden_size:]
 
-        # graph structure prediction & compute auxiliary loss
-        cr_table_loss, cr_table = self.CRTablePredictor.compute_loss(hs, ts, cr_table_label, return_logit=True)
-        re_table_loss, re_table = self.RETablePredictor.compute_loss(hs, ts, re_table_label, return_logit=True)
-
-        # convert logits to table in batch form
         span_len = [len(span) for span in spans]
         anaphor_len = [len(anaphor) for anaphor in anaphors]
         batch_len = [(l+a_l) for l, a_l in zip(span_len, anaphor_len)]
+        # graph structure prediction & compute auxiliary loss
+        cr_table_loss, cr_table = self.CRTablePredictor.compute_loss(hs, ts, cr_table_label, return_logit=True, span_len=batch_len)
+        re_table_loss, re_table = self.RETablePredictor.compute_loss(hs, ts, re_table_label, return_logit=True, span_len=batch_len)
+
+        # convert logits to table in batch form
         offset = 0
         cr_adj, re_adj = [], [] # store sub table first
         for l, a_l in zip(span_len, anaphor_len):
@@ -215,24 +201,9 @@ class Table2Graph(nn.Module):
         hs, ts = convert_node_to_table(nodes, batch_len)
         hs = torch.cat([hs, rs_total], dim=-1)
         ts = torch.cat([ts, rs_total], dim=-1)
-        total_cls_emb = torch.cat([hs, ts], dim=-1)
-        
-        # axial attention
-        offset = 0
-        after_att = []
-        for l, a_l in zip(span_len, anaphor_len):
-            sample_table = total_cls_emb[offset: offset + (l+a_l)*(l+a_l)].view(1, (l+a_l), (l+a_l), self.hidden_size*4)
-            sample_table = self.axial_transformer(sample_table).squeeze(0)
-            sample_table = sample_table[:l, :l, :]
-            sample_table = sample_table.reshape(l*l, self.hidden_size*4)
-            after_att.append(sample_table)
-            offset += (l+a_l)*(l+a_l)
-        after_att = torch.cat(after_att, dim=0)
-        hs = after_att[:, :self.hidden_size*2]
-        ts = after_att[:, self.hidden_size*2:]
 
-        cr_loss = self.CR.compute_loss(hs, ts, cr_label)
-        re_loss = self.RE.compute_loss(hs, ts, re_label)
+        cr_loss = self.CR.compute_loss(hs, ts, cr_label, span_len=span_len, ana_len=anaphor_len)
+        re_loss = self.RE.compute_loss(hs, ts, re_label, span_len=span_len, ana_len=anaphor_len)
         return cr_loss + re_loss + self.alpha * cr_table_loss + self.alpha * re_table_loss
 
     def inference(self, input_ids=None, attention_mask=None, spans=None, 
