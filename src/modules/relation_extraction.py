@@ -32,11 +32,11 @@ def softmax_vote():
 
 class RelationExtractionTableFiller(BaseTableFiller):
     def __init__(self, hidden_dim: int, num_class: int, block_dim: int=64, sample_rate: float=0.0, beta: float=1.0,\
-                    max_pred: int=-1, aggr_func: Callable=mean_vote):
+                    max_pred: int=-1, aggr_func: Callable=mean_vote, num_axial_layers=2):
         """
         Optional strategy:
         """
-        super().__init__(hidden_dim, hidden_dim, block_dim, num_class, sample_rate, ATLoss(beta))
+        super().__init__(hidden_dim, hidden_dim, block_dim, num_class, sample_rate, ATLoss(beta), num_axial_layers=num_axial_layers)
         self.max_pred = max_pred
         self.aggr_func = aggr_func
 

@@ -6,9 +6,9 @@ from .table_filler import BaseTableFiller
 
 
 class CoreferenceResolutionTableFiller(BaseTableFiller):
-    def __init__(self, hidden_dim: int, block_dim: int=128, threshold: float=0.4, strategy: str='average'):
+    def __init__(self, hidden_dim: int, block_dim: int=128, threshold: float=0.4, strategy: str='average', num_axial_layers=2):
         # threshold: the minimum accepted similarity
-        super().__init__(hidden_dim, hidden_dim, block_dim, 1, .0, nn.BCEWithLogitsLoss())
+        super().__init__(hidden_dim, hidden_dim, block_dim, 1, .0, nn.BCEWithLogitsLoss(), num_axial_layers=num_axial_layers)
         self.clustering = AgglomerativeClustering(n_clusters=None, linkage=strategy, metric='precomputed', distance_threshold=1 - threshold)
 
     def inference(self, head_embed: torch.Tensor=None, tail_embed: torch.Tensor=None,\

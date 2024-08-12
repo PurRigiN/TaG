@@ -99,13 +99,13 @@ class Table2Graph(nn.Module):
         self.span_attention = nn.MultiheadAttention(self.hidden_size, num_heads=1, batch_first=True)
 
         self.CRTablePredictor = BaseTableFiller(hidden_dim=self.hidden_size, emb_dim=self.hidden_size,
-                                                block_dim=64, num_class=1, sample_rate=0, lossf=nn.BCEWithLogitsLoss())
+                                                block_dim=64, num_class=1, sample_rate=0, lossf=nn.BCEWithLogitsLoss(), num_axial_layers=config.num_axial_layers)
         self.RETablePredictor = BaseTableFiller(hidden_dim=self.hidden_size, emb_dim=self.hidden_size,
-                                                block_dim=64, num_class=1, sample_rate=0, lossf=nn.BCEWithLogitsLoss())
+                                                block_dim=64, num_class=1, sample_rate=0, lossf=nn.BCEWithLogitsLoss(), num_axial_layers=config.num_axial_layers)
         self.RGCN = RelGCN(self.hidden_size, self.hidden_size, self.hidden_size, num_rel=3, num_layer=config.num_gcn_layers)
 
-        self.CR = CoreferenceResolutionTableFiller(self.hidden_size)
-        self.RE = RelationExtractionTableFiller(self.hidden_size, config.num_class, beta=config.beta)
+        self.CR = CoreferenceResolutionTableFiller(self.hidden_size, num_axial_layers=config.num_axial_layers)
+        self.RE = RelationExtractionTableFiller(self.hidden_size, config.num_class, beta=config.beta, num_axial_layers=config.num_axial_layers)
         self.alpha = config.alpha
         self.beta = config.beta
         self.rho = config.rho

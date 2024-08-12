@@ -58,6 +58,7 @@ def get_opt():
                         help="Curriculum learning threshold of pre75")
     parser.add_argument("--trust_threshold", default=0.0, type=float,
                         help="consider anaphor links that higher than trust_threshold")
+    parser.add_argument("--num_axial_layers", default=2, type=int)
 
     parser.add_argument("--device", default="cuda:0", type=str,
                         help="The running device.")
@@ -451,6 +452,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
     config.num_class = len(docred_rel2id)
     config.num_gcn_layers = args.num_gcn_layers
+    config.num_axial_layers = args.num_axial_layers
     config.alpha = args.alpha
     config.beta = args.beta
     config.rho = args.rho

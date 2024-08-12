@@ -102,7 +102,7 @@ class BaseTableFiller(nn.Module):
     总之,这个网络就是输入两个节点的表示,然后输出一个logits,个数为num_class
     在table_filler阶段, coref和re的table都是用这个网络, 个数num_class为1
     """
-    def __init__(self, hidden_dim: int, emb_dim:int, block_dim: int, num_class: int, sample_rate:float, lossf: nn.Module):
+    def __init__(self, hidden_dim: int, emb_dim:int, block_dim: int, num_class: int, sample_rate:float, lossf: nn.Module, num_axial_layers: int):
         super().__init__()
         # validation: input can be chunked into blocks
         assert emb_dim % block_dim == 0, "emb_dim must be multiple of block_dim."
@@ -116,7 +116,7 @@ class BaseTableFiller(nn.Module):
         self.tail_extractor = nn.Linear(2 * hidden_dim, emb_dim)                    # before bilinear layer
         self.linear = nn.Linear(2 * emb_dim, num_class, bias=False)
         self.projection = nn.Linear(emb_dim*block_dim, self.hidden_dim)
-        self.axial_transformer = AxialTransformer_by_mention(self.hidden_dim, dropout=0.0, num_layers=2, heads=2)
+        self.axial_transformer = AxialTransformer_by_mention(self.hidden_dim, dropout=0.0, num_layers=num_axial_layers, heads=2)
         self.bilinear = nn.Linear(self.hidden_dim, num_class)    # size: [(d^2/k), num_class], bias is included
         if sample_rate == 0:
             self.sampler = None
