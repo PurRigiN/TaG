@@ -101,7 +101,7 @@ def train(args, model: Table2Graph, train_features, dev_features, test_features=
                 if step == len(dataloader) - 1 and epoch >= args.evaluation_start_epoch: 
                     dev_score, dev_output = evaluate(args, model, dev_features, tag="dev")
                     if test_features is not None:
-                        test_score, test_output = evaluate(args, model, test_features, tag="test")
+                        test_score, test_output = evaluate(args, model, test_features, tag="re-docred-test")
                         dev_output.update(test_output)
                     # train_score, train_output = evaluate(args, model, train_features, tag="train")
                     # dev_output.update(train_output)
@@ -299,7 +299,10 @@ if __name__ == "__main__":
     if args.load_path == "":
         train_features = read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc')
         dev_features = read_dataset(tokenizer, split='dev', dataset=args.dataset, task='gc')
-        test_features = None
+        if args.dataset == "re-docred":
+            test_features = read_dataset(tokenizer, split='test', dataset=args.dataset, task='gc')
+        else:
+            test_features = None
 
         train(args, model, train_features, dev_features, test_features)
     else:
@@ -310,9 +313,14 @@ if __name__ == "__main__":
         test_features = read_dataset(tokenizer, split='test', dataset=args.dataset, task='gc')
         
         dev_score, dev_output = evaluate(args, model, dev_features, tag="dev")
+        print("--------dev_output--------")
         print(dev_output)
 
         result = report(args, model, test_features)
+        if args.dataset == "re-docred":
+            _, test_output = evaluate(args, model, test_features, tag="re-docred-test")
+            print("--------test_output--------")
+            print(test_output)
 
         root_dir = os.path.dirname(os.path.realpath(__file__))
         root_dir = os.path.dirname(root_dir)
