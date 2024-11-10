@@ -175,7 +175,7 @@ class BaseTableFiller(nn.Module):
                 offset += (l+a_l)*(l+a_l)
                 cat_list.append(temp_tensor)
             linear_logits = torch.cat(cat_list, dim=0)      
-        logits = bilinear_logits
+        logits = bilinear_logits + linear_logits
         nan_pos = torch.isnan(logits)
         if torch.any(nan_pos):
             print(nan_pos)
