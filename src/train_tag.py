@@ -59,6 +59,7 @@ def get_opt():
     parser.add_argument("--trust_threshold", default=0.0, type=float,
                         help="consider anaphor links that higher than trust_threshold")
     parser.add_argument("--num_axial_layers", default=2, type=int)
+    parser.add_argument("--no_anaphor", default=False, type=bool)
 
     parser.add_argument("--device", default="cuda:0", type=str,
                         help="The running device.")
@@ -477,31 +478,31 @@ if __name__ == "__main__":
         train_features = []
         if args.curriculum_pre25 != None and args.curriculum_pre50 != None and args.curriculum_pre75 != None:
             train_features.append(
-                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.curriculum_pre75)
+                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.curriculum_pre75,no_anaphor=args.no_anaphor)
             )
             train_features.append(
-                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.curriculum_pre50)
+                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.curriculum_pre50,no_anaphor=args.no_anaphor)
             )
             train_features.append(
-                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.curriculum_pre25)
+                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.curriculum_pre25,no_anaphor=args.no_anaphor)
             )
             train_features.append(
-                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.trust_threshold)
+                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.trust_threshold,no_anaphor=args.no_anaphor)
             )
         else:
             train_features.append(
-                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.trust_threshold)
+                read_dataset(tokenizer, split='train_annotated', dataset=args.dataset, task='gc', curriculum_threshold=args.trust_threshold,no_anaphor=args.no_anaphor)
             )
-        dev_features = read_dataset(tokenizer, split='dev', dataset=args.dataset, task='gc')
+        dev_features = read_dataset(tokenizer, split='dev', dataset=args.dataset, task='gc',no_anaphor=args.no_anaphor)
         if args.dataset == "re-docred":
-            test_features = read_dataset(tokenizer, split='test', dataset=args.dataset, task='gc')
+            test_features = read_dataset(tokenizer, split='test', dataset=args.dataset, task='gc',no_anaphor=args.no_anaphor)
         else:
             test_features = None
 
         train(args, model, train_features, dev_features, test_features)
     else:
-        dev_features = read_dataset(tokenizer, split='dev', dataset=args.dataset, task='gc')
-        test_features = read_dataset(tokenizer, split='test', dataset=args.dataset, task='gc')
+        dev_features = read_dataset(tokenizer, split='dev', dataset=args.dataset, task='gc',no_anaphor=args.no_anaphor)
+        test_features = read_dataset(tokenizer, split='test', dataset=args.dataset, task='gc',no_anaphor=args.no_anaphor)
 
         model = amp.initialize(model, opt_level="O1", verbosity=0)
         model.load_state_dict(torch.load(args.load_path))

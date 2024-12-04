@@ -17,11 +17,11 @@ root_dir = os.path.dirname(root_dir)
 docred_rel2id = json.load(open(os.path.join(root_dir, "data/docred/rel2id.json"), "r"))
 docred_id2rel = {v: k for k, v in docred_rel2id.items()}
 
-def read_dataset(tokenizer, split='train_annotated', dataset='docred', task='me', curriculum_threshold=0.0):
+def read_dataset(tokenizer, split='train_annotated', dataset='docred', task='me', curriculum_threshold=0.0, no_anaphor=False):
     if task == 'me':
         return read_me_data(tokenizer=tokenizer, split=split, dataset=dataset)
     if task == 'gc':
-        return read_gc_data(tokenizer=tokenizer, split=split, dataset=dataset, curriculum_threshold=curriculum_threshold)
+        return read_gc_data(tokenizer=tokenizer, split=split, dataset=dataset, curriculum_threshold=curriculum_threshold, no_anaphor=no_anaphor)
     raise ValueError("Unknown task type.")
 
 def read_me_data(tokenizer, split='train_annotated', dataset='docred'):
@@ -117,7 +117,7 @@ def read_me_data(tokenizer, split='train_annotated', dataset='docred'):
     print("# of mentions:\t\t{}".format(cnt_mention))
     return features
 
-def read_gc_data(tokenizer, split='train_annotated', dataset='docred', curriculum_threshold=0.0):
+def read_gc_data(tokenizer, split='train_annotated', dataset='docred', curriculum_threshold=0.0, no_anaphor=False):
     i_line = 0
     features = []
     data_path = f'data/{dataset}/{split}_gc.json'
@@ -252,6 +252,11 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred', curriculu
 
         num_spans = len(spans)
         num_anaphors = len(anaphors)
+        if no_anaphor:
+            num_anaphors = 0
+            link_span_anaphor = []
+            raw_anaphors = []
+            anaphors = []
 
         # get syntax graph
         syntax_graph = torch.zeros(num_spans + num_anaphors, num_spans + num_anaphors)
@@ -324,13 +329,14 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred', curriculu
                         # 包括一阶段和二阶段
                         table_cr_table_label[m1][m2] = 1
                         table_cr_label[m1][m2] = 1
-            for (link_m, link_a) in link_span_anaphor:
-                # 对于每一个anaphor，找到对应的mention，然后找到所属的entity
-                link_e = find_entity_by_mention(link_m, entity_len)
-                # 将该anaphor与entity内的所有mention之间的关系添加label
-                for m1 in range(accumulate_entity_len[link_e], accumulate_entity_len[link_e+1]):
-                    table_cr_table_label[m1][link_a+num_spans] = 1
-                    table_cr_table_label[link_a+num_spans][m1] = 1
+            if not no_anaphor:
+                for (link_m, link_a) in link_span_anaphor:
+                    # 对于每一个anaphor，找到对应的mention，然后找到所属的entity
+                    link_e = find_entity_by_mention(link_m, entity_len)
+                    # 将该anaphor与entity内的所有mention之间的关系添加label
+                    for m1 in range(accumulate_entity_len[link_e], accumulate_entity_len[link_e+1]):
+                        table_cr_table_label[m1][link_a+num_spans] = 1
+                        table_cr_table_label[link_a+num_spans][m1] = 1
             for i in range(num_spans, num_spans + num_anaphors):
                 for j in range(num_spans, num_spans + num_anaphors):
                     # 对于每一对anaphor
