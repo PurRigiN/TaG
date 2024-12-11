@@ -240,7 +240,10 @@ def read_gc_data(tokenizer, split='train_annotated', dataset='docred'):
                    "re_label": re_label, "re_triples": relations, "re_table_label": re_table_label,
                    "syntax_graph": syntax_graph,    # contain self loop
                    "vertexSet": entities,
-                   "title": sample["title"]}
+                   "title": sample["title"],
+                   "raw_spans": raw_spans,
+                   "sents": sample["sents"],
+                   'labels': sample['labels'] if 'labels' in sample else None,}
         features.append(feature)
 
     print("# of documents:\t\t{}.".format(i_line))
